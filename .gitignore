@@ -1,0 +1,47 @@
+# 의존성
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 빌드 결과
+dist/
+build/
+
+# 환경 변수
+.env
+.env.local
+.env.*.local
+
+# 데이터베이스
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# 로그
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 테스트
+coverage/
+.nyc_output/
+
+# 임시 파일
+tmp/
+temp/
+
+# 소스 참조 (별도 관리)
+omniroute-source/
+opencodex-source/

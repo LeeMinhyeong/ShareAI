@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>OmniRoute vs opencodex</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap">
+<style>
+/* Layout: 한 줄 세로 리포트. 섹션마다 큰 그림 + 한두 문장 쉬운 설명이 먼저, 그 아래 접이식 '자세히' 패널.
+   OmniRoute = 자두색, opencodex = 청록색으로 끝까지 일관되게 구분. */
+:root {
+  --bg: #F4F5F7;
+  --surface: #FFFFFF;
+  --surface-2: #EBEDF1;
+  --fg: #15171C;
+  --muted: #586070;
+  --line: #D3D8E0;
+  --om: #9E2373;
+  --om-soft: #F7E4F0;
+  --ocx: #0B7563;
+  --ocx-soft: #DCF0EA;
+  --risk: #BE2A1F;
+  --risk-soft: #FBE5E2;
+  --warn: #9A5B00;
+  --warn-soft: #FBEFD8;
+  --ok: #1D7337;
+  --ok-soft: #E0F2E5;
+  --f-display: "Black Han Sans", "IBM Plex Sans KR", "Malgun Gothic", sans-serif;
+  --f-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101216; --surface: #191C22; --surface-2: #22262E; --fg: #E7E9EE; --muted: #9AA2B0; --line: #313743;
+    --om: #E46DB8; --om-soft: #3A1D30; --ocx: #3FC4A8; --ocx-soft: #143A32;
+    --risk: #F2716A; --risk-soft: #3D1C1A; --warn: #E7A748; --warn-soft: #382B13; --ok: #5FC47D; --ok-soft: #173321;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101216; --surface: #191C22; --surface-2: #22262E; --fg: #E7E9EE; --muted: #9AA2B0; --line: #313743;
+  --om: #E46DB8; --om-soft: #3A1D30; --ocx: #3FC4A8; --ocx-soft: #143A32;
+  --risk: #F2716A; --risk-soft: #3D1C1A; --warn: #E7A748; --warn-soft: #382B13; --ok: #5FC47D; --ok-soft: #173321;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--f-body);
+  font-size: 16px;
+  line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 72px;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.wrap { max-width: 1040px; margin: 0 auto; }
+.prose { max-width: 68ch; }
+a { color: inherit; text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--ocx); outline-offset: 2px; border-radius: 4px; }
+
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; margin: 0; }
+h1 { font-family: var(--f-display); font-weight: 400; font-size: clamp(2.3rem, 6vw, 4rem); letter-spacing: -0.01em; }
+h2 { font-family: var(--f-display); font-weight: 400; font-size: clamp(1.7rem, 3.6vw, 2.4rem); }
+h3 { font-size: 1.15rem; font-weight: 700; }
+p { margin: 0; }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+code { background: var(--surface-2); padding: 0.1em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+.om { color: var(--om); }
+.ocx { color: var(--ocx); }
+.muted { color: var(--muted); }
+.eyebrow { font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+
+/* hero */
+header.hero { padding-block: 56px 28px; display: grid; gap: 20px; }
+.hero .vs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25em 0.45em; }
+.hero .vs .small { font-family: var(--f-body); font-size: 0.4em; color: var(--muted); font-weight: 500; }
+.hero .lede { font-size: clamp(1.15rem, 2.4vw, 1.4rem); max-width: 40ch; line-height: 1.55; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 0.85rem; color: var(--muted); }
+
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 8px; }
+.verdict > div { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 6px; min-width: 0; }
+.verdict .tag { font-size: 0.8rem; font-weight: 700; }
+.verdict p { font-size: 0.95rem; }
+
+nav.toc { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.toc .links { display: flex; gap: 6px; overflow-x: auto; flex: 1 1 300px; min-width: 0; scrollbar-width: thin; padding-bottom: 2px; }
+.toc a { white-space: nowrap; font-size: 0.85rem; text-decoration: none; padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+.toc a:hover { border-color: var(--fg); }
+button.toggle { font: inherit; font-size: 0.85rem; font-weight: 700; padding: 6px 14px; border-radius: 999px; border: 1.5px solid var(--fg); background: var(--fg); color: var(--bg); cursor: pointer; white-space: nowrap; }
+button.toggle:hover { opacity: 0.88; }
+
+/* sections */
+section.chap { padding-block: 64px 8px; display: grid; gap: 22px; scroll-margin-top: 64px; }
+.chap > .head { display: grid; gap: 8px; }
+.chap .num { font-family: var(--f-display); font-size: 1rem; color: var(--muted); }
+.easy { font-size: clamp(1.1rem, 2.1vw, 1.3rem); line-height: 1.6; max-width: 46ch; }
+.easy b { background: linear-gradient(transparent 62%, var(--warn-soft) 62%); font-weight: 700; }
+
+figure.fig { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 14px; display: grid; gap: 10px; min-width: 0; }
+.fig .scroll { overflow-x: auto; }
+.fig svg { display: block; width: 100%; height: auto; color: var(--fg); font-family: var(--f-body); }
+.fig svg.wide { min-width: 760px; }
+figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
+
+/* svg classes */
+.b { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+.b2 { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.2; }
+.bom { fill: var(--om-soft); stroke: var(--om); stroke-width: 1.5; }
+.bocx { fill: var(--ocx-soft); stroke: var(--ocx); stroke-width: 1.5; }
+.bok { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 1.2; }
+.brisk { fill: var(--risk-soft); stroke: var(--risk); stroke-width: 1.2; }
+.bdash { fill: none; stroke: var(--risk); stroke-width: 1.4; stroke-dasharray: 4 3; }
+.ln { stroke: currentColor; stroke-width: 1.4; fill: none; }
+.lnm { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+.lnd { stroke: var(--muted); stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+.lom { stroke: var(--om); stroke-width: 1.6; fill: none; }
+.locx { stroke: var(--ocx); stroke-width: 1.6; fill: none; }
+.lrisk { stroke: var(--risk); stroke-width: 2; fill: none; }
+.t { fill: currentColor; font-size: 13px; }
+.tb { fill: currentColor; font-size: 13.5px; font-weight: 700; }
+.ts { fill: var(--muted); font-size: 11.5px; }
+.tm { fill: var(--muted); font-size: 11px; font-family: var(--f-mono); }
+.tom { fill: var(--om); font-size: 13.5px; font-weight: 700; }
+.tocx { fill: var(--ocx); font-size: 13.5px; font-weight: 700; }
+.trisk { fill: var(--risk); font-size: 12px; font-weight: 700; }
+.tok { fill: var(--ok); font-size: 12px; font-weight: 700; }
+.ah { fill: currentColor; }
+.ahm { fill: var(--muted); }
+.ahom { fill: var(--om); }
+.ahocx { fill: var(--ocx); }
+
+/* compare cards */
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.card.om { border-top: 4px solid var(--om); color: var(--fg); }
+.card.ocx { border-top: 4px solid var(--ocx); color: var(--fg); }
+.card h3 .who { font-family: var(--f-display); font-weight: 400; font-size: 1.4rem; }
+.card.om h3 .who { color: var(--om); }
+.card.ocx h3 .who { color: var(--ocx); }
+.card ul { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+.stat { display: grid; gap: 0; }
+.stat .v { font-family: var(--f-display); font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.stat .k { font-size: 0.8rem; color: var(--muted); }
+
+/* details */
+details.deep { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+details.deep > summary { cursor: pointer; list-style: none; padding: 12px 18px; font-weight: 700; display: flex; gap: 10px; align-items: center; }
+details.deep > summary::-webkit-details-marker { display: none; }
+details.deep > summary::before { content: "+"; font-family: var(--f-mono); display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--surface-2); flex: none; }
+details.deep[open] > summary::before { content: "−"; }
+details.deep > summary .sub { font-weight: 400; color: var(--muted); font-size: 0.88rem; }
+details.deep .body { padding: 4px 20px 20px; display: grid; gap: 14px; min-width: 0; }
+details.deep .body > p, details.deep .body > ul, details.deep .body > ol { max-width: 72ch; }
+details.deep ul, details.deep ol { margin: 0; padding-left: 1.2em; display: grid; gap: 5px; }
+
+.tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+thead th { background: var(--surface-2); font-size: 0.82rem; letter-spacing: 0.02em; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+td.k { font-weight: 700; white-space: nowrap; }
+th.om { color: var(--om); } th.ocx { color: var(--ocx); }
+table.wide { min-width: 720px; }
+
+.callout { border-left: 4px solid var(--fg); background: var(--surface); padding: 14px 18px; border-radius: 0 10px 10px 0; display: grid; gap: 6px; max-width: 80ch; }
+.callout .lab { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; }
+.callout.risk { border-left-color: var(--risk); }
+.callout.risk .lab { color: var(--risk); }
+
+.chip { display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.chip.v { background: var(--ok-soft); color: var(--ok); }
+.chip.i { background: var(--warn-soft); color: var(--warn); }
+.chip.hi { background: var(--risk-soft); color: var(--risk); }
+.chip.mid { background: var(--warn-soft); color: var(--warn); }
+.chip.lo { background: var(--surface-2); color: var(--muted); }
+.chip.om { background: var(--om-soft); color: var(--om); }
+.chip.ocx { background: var(--ocx-soft); color: var(--ocx); }
+
+pre { margin: 0; background: var(--surface-2); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: var(--f-mono); font-size: 0.82rem; line-height: 1.6; }
+pre code { background: none; padding: 0; font-size: inherit; }
+
+.steps { counter-reset: s; display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.steps > li { counter-increment: s; display: grid; grid-template-columns: 34px 1fr; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.steps > li::before { content: counter(s); font-family: var(--f-display); font-size: 1.3rem; line-height: 1.3; }
+.steps > li > div { display: grid; gap: 4px; min-width: 0; }
+
+.donts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.donts > div { background: var(--risk-soft); border-radius: 10px; padding: 12px 14px; font-size: 0.92rem; }
+.donts b { color: var(--risk); display: block; margin-bottom: 2px; }
+
+footer { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 0.85rem; color: var(--muted); display: grid; gap: 8px; }
+
+@media (max-width: 560px) {
+  .stats { grid-template-columns: 1fr 1fr; }
+  section.chap { padding-block: 48px 4px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="hero">
+  <p class="eyebrow">LLM 라우터 두 개를 코드까지 뜯어본 보고서 · 2026-10-23</p>
+  <h1 class="vs"><span class="om">OmniRoute</span><span class="small">vs</span><span class="ocx">opencodex</span></h1>
+  <p class="lede">둘 다 "AI 코딩 도구와 AI 모델 사이에 끼어드는 통역사"입니다. 한쪽은 문어발 게이트웨이, 다른 쪽은 Codex·Claude Code 전용 정밀 통역사입니다.</p>
+  <div class="meta">
+    <span>OmniRoute <code>2319a84a</code> · v3.8.53</span>
+    <span>opencodex <code>83ec4f75</code> · v2.91.0</span>
+    <span><span class="chip v">확인</span> 코드에서 직접 확인 · <span class="chip i">추정</span> 정황상 판단</span>
+  </div>
+  <div class="verdict">
+    <div><span class="tag om">OmniRoute 한 줄</span><p>도구 아무거나 → 제공자 375곳. 라우팅·압축·대시보드까지 다 있는 대신 덩치와 공격 표면이 큽니다.</p></div>
+    <div><span class="tag ocx">opencodex 한 줄</span><p>Codex와 Claude Code의 화면은 그대로 두고 두뇌(모델)만 바꿉니다. 프로토콜 번역이 훨씬 정교합니다.</p></div>
+    <div><span class="tag" style="color:var(--risk)">공통 경고</span><p>둘 다 구독 계정을 공식 클라이언트처럼 위장해 씁니다. 약관 위반·계정 정지 위험이 큽니다.</p></div>
+  </div>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <div class="links">
+    <a href="#what">라우터란</a>
+    <a href="#profile">프로필</a>
+    <a href="#flow">요청 경로</a>
+    <a href="#routing">길 찾기</a>
+    <a href="#auth">계정·저장</a>
+    <a href="#hub">번역 허브</a>
+    <a href="#rules">메시지 규칙</a>
+    <a href="#stream">스트림</a>
+    <a href="#tools">tool call</a>
+    <a href="#reasoning">reasoning</a>
+    <a href="#ending">종료·오류</a>
+    <a href="#compress">압축</a>
+    <a href="#risk">보안·약관</a>
+    <a href="#build">직접 만든다면</a>
+    <a href="#files">파일 지도</a>
+  </div>
+  <button class="toggle" id="toggleAll" type="button" aria-pressed="false">자세히 모두 펼치기</button>
+</nav>
+
+<!-- 1 -->
+<section class="chap" id="what">
+  <div class="head">
+    <span class="num">01</span>
+    <h2>라우터가 뭐예요?</h2>
+  </div>
+  <p class="easy">AI 도구마다 쓰는 "말투"(API 형식)가 다릅니다. 라우터는 가운데 앉아서 <b>말투를 통역</b>하고, <b>어느 모델로 보낼지 고르고</b>, <b>계정과 키를 관리</b>합니다.</p>
+  <figure class="fig">
+    <svg viewBox="0 0 760 300" role="img" aria-label="왼쪽 AI 코딩 도구들이 가운데 라우터를 거쳐 오른쪽 여러 모델 제공자와 통신한다. 라우터는 통역, 길 찾기, 계정 관리를 한다.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+      </defs>
+      <text x="105" y="22" text-anchor="middle" class="ts">AI 코딩 도구</text>
+      <rect x="20" y="40" width="170" height="44" rx="8" class="b"/><text x="105" y="67" text-anchor="middle" class="tb">Codex CLI · App</text>
+      <rect x="20" y="120" width="170" height="44" rx="8" class="b"/><text x="105" y="147" text-anchor="middle" class="tb">Claude Code</text>
+      <rect x="20" y="200" width="170" height="44" rx="8" class="b"/><text x="105" y="227" text-anchor="middle" class="tb">Cursor · Cline 등</text>
+
+      <rect x="300" y="30" width="170" height="230" rx="12" class="b2"/>
+      <text x="385" y="62" text-anchor="middle" class="tb" style="font-size:16px">라우터</text>
+      <text x="385" y="108" text-anchor="middle" class="t">① 말투 통역</text>
+      <text x="385" y="152" text-anchor="middle" class="t">② 보낼 곳 고르기</text>
+      <text x="385" y="196" text-anchor="middle" class="t">③ 계정·키 관리</text>
+      <text x="385" y="238" text-anchor="middle" class="tm">localhost:20128 / 10100</text>
+
+      <text x="655" y="22" text-anchor="middle" class="ts">모델 제공자</text>
+      <rect x="570" y="40" width="170" height="44" rx="8" class="b"/><text x="655" y="67" text-anchor="middle" class="tb">Anthropic Claude</text>
+      <rect x="570" y="120" width="170" height="44" rx="8" class="b"/><text x="655" y="147" text-anchor="middle" class="tb">OpenAI · Gemini</text>
+      <rect x="570" y="200" width="170" height="44" rx="8" class="b"/><text x="655" y="227" text-anchor="middle" class="tb">DeepSeek · GLM · 로컬</text>
+
+      <line x1="192" y1="62" x2="296" y2="62" class="ln" marker-start="url(#a1)" marker-end="url(#a1)"/>
+      <line x1="192" y1="142" x2="296" y2="142" class="ln" marker-start="url(#a1)" marker-end="url(#a1)"/>
+      <line x1="192" y1="222" x2="296" y2="222" class="ln" marker-start="url(#a1)" marker-end="url(#a1)"/>
+      <line x1="474" y1="62" x2="566" y2="62" class="ln" marker-start="url(#a1)" marker-end="url(#a1)"/>
+      <line x1="474" y1="142" x2="566" y2="142" class="ln" marker-start="url(#a1)" marker-end="url(#a1)"/>
+      <line x1="474" y1="222" x2="566" y2="222" class="ln" marker-start="url(#a1)" marker-end="url(#a1)"/>
+      <text x="244" y="284" text-anchor="middle" class="ts">도구의 형식으로</text>
+      <text x="520" y="284" text-anchor="middle" class="ts">제공자의 형식으로</text>
+    </svg>
+    <figcaption>도구는 "OpenAI에 말하는 줄" 알고 라우터에 요청합니다. 라우터가 그걸 Claude·Gemini 형식으로 바꿔 보내고, 돌아온 답을 다시 도구의 형식으로 바꿉니다.</figcaption>
+  </figure>
+  <details class="deep">
+    <summary>자세히: 왜 통역이 어려운가 <span class="sub">형식 세 가지의 차이</span></summary>
+    <div class="body">
+      <p>요즘 코딩 도구가 쓰는 형식은 크게 셋입니다. 겉보기엔 비슷해도 담을 수 있는 정보가 다릅니다.</p>
+      <div class="tw"><table class="wide">
+        <thead><tr><th>형식</th><th>쓰는 도구</th><th>특징</th><th>통역할 때 문제</th></tr></thead>
+        <tbody>
+          <tr><td class="k">OpenAI Responses</td><td>Codex CLI·App</td><td>출력이 "항목(item)" 단위. reasoning 항목, <code>encrypted_content</code>, custom tool(apply_patch), compaction, web_search 같은 전용 기능</td><td>다른 제공자에는 이 기능들이 없음</td></tr>
+          <tr><td class="k">Anthropic Messages</td><td>Claude Code</td><td>content block 단위. thinking 블록에 <b>서명(signature)</b>이 붙고, 다음 턴에 그대로 돌려보내야 함</td><td>서명을 잃으면 400 오류</td></tr>
+          <tr><td class="k">OpenAI Chat Completions</td><td>Cursor·Cline 등 대부분</td><td>가장 흔하지만 가장 단순. reasoning 자리가 표준에 없음</td><td>정보를 담을 칸이 부족</td></tr>
+        </tbody>
+      </table></div>
+      <p>그래서 "어떤 형식을 중간 기준(허브)으로 삼느냐"가 두 프로젝트를 가르는 가장 큰 설계 결정입니다. <a href="#hub">06 번역 허브</a>에서 자세히 봅니다.</p>
+    </div>
+  </details>
+</section>
+
+<!-- 2 -->
+<section class="chap" id="profile">
+  <div class="head">
+    <span class="num">02</span>
+    <h2>두 프로젝트 프로필</h2>
+  </div>
+  <p class="easy">둘 다 <b>사실상 메인테이너 한 명</b>이 AI 에이전트로 엄청난 속도로 만드는 초대형 프로젝트입니다. 코드가 수십만 줄입니다.</p>
+  <div class="pair">
+    <div class="card om">
+      <h3><span class="who">OmniRoute</span></h3>
+      <p class="muted" style="font-size:.9rem">cheaper-inference/OmniRoute (diegosouzapw에서 이전) · MIT</p>
+      <div class="stats">
+        <div class="stat"><span class="v">79,959</span><span class="k">GitHub 스타</span></div>
+        <div class="stat"><span class="v">11,647</span><span class="k">포크</span></div>
+        <div class="stat"><span class="v">약 107만</span><span class="k">코드 줄 수 (src+open-sse)</span></div>
+        <div class="stat"><span class="v">8,084</span><span class="k">테스트 파일</span></div>
+        <div class="stat"><span class="v">266</span><span class="k">10/21 하루 커밋</span></div>
+        <div class="stat"><span class="v">33</span><span class="k">CI 워크플로</span></div>
+      </div>
+      <ul>
+        <li>Node 22/24 · Next.js 16 · React 19 · SQLite(마이그레이션 209개)</li>
+        <li>출발점: <code>9router</code> 포크 + Go 프로젝트 <code>CLIProxyAPI</code>의 TS 포팅</li>
+        <li>생성 2026-02-13, PR 번호 약 #17,950</li>
+        <li>기여자 862명(익명 포함), 최다 기여자 6,035 커밋</li>
+      </ul>
+    </div>
+    <div class="card ocx">
+      <h3><span class="who">opencodex</span></h3>
+      <p class="muted" style="font-size:.9rem">lidge-jun/opencodex · npm <code>@bitkyc08/opencodex</code> · MIT</p>
+      <div class="stats">
+        <div class="stat"><span class="v">17,790</span><span class="k">GitHub 스타</span></div>
+        <div class="stat"><span class="v">1,380</span><span class="k">포크</span></div>
+        <div class="stat"><span class="v">약 55만</span><span class="k">코드 줄 수 (src)</span></div>
+        <div class="stat"><span class="v">2,571</span><span class="k">테스트 파일</span></div>
+        <div class="stat"><span class="v">약 27</span><span class="k">하루 평균 커밋</span></div>
+        <div class="stat"><span class="v">19</span><span class="k">CI 워크플로</span></div>
+      </div>
+      <ul>
+        <li>Bun · TypeScript · React GUI · Tauri 데스크톱 · Rust 헬퍼</li>
+        <li>독자 개발. 설계 문서 242개(<code>structure/</code>), 작업 기록 약 5,300개(<code>devlog/</code>)</li>
+        <li>생성 2026-06-18, 약 2일마다 릴리스</li>
+        <li>기여자 256명, 최다 기여자 8,022 커밋</li>
+      </ul>
+    </div>
+  </div>
+  <details class="deep">
+    <summary>자세히: 품질 신호 비교 <span class="sub">테스트·린트·타입·커밋 속도</span></summary>
+    <div class="body">
+      <div class="tw"><table class="wide">
+        <thead><tr><th></th><th class="om">OmniRoute</th><th class="ocx">opencodex</th></tr></thead>
+        <tbody>
+          <tr><td class="k">테스트</td><td><code>node --test</code>+tsx 위주, Vitest, Playwright, Stryker(돌연변이), promptfoo, Schemathesis. unit 약 7,695 · integration 159 · e2e 44</td><td><code>bun:test</code>, 테스트 약 3.5만 건. 도메인별 샤딩, 불변식(INV-…)마다 테스트를 연결</td></tr>
+          <tr><td class="k">CI</td><td>CodeQL, Semgrep, zizmor, Scorecard, gitleaks, Trivy, DAST 스모크, 야간 돌연변이·보안 테스트</td><td>Linux·macOS·Windows 샤드, 키링·Docker·npm 전역 설치 스모크, 구조 게이트, 개인정보 게이트</td></tr>
+          <tr><td class="k">타입</td><td><code>strict: false</code>, <code>noImplicitAny: false</code></td><td><code>tsc --noEmit</code> 타입 체크</td></tr>
+          <tr><td class="k">린트 부채</td><td>ESLint 위반 약 4,862건을 suppression 파일로 동결. 복잡도·파일 크기·중복·순환 참조 래칫</td><td>import 순환 래칫, 파일 크기 래칫, 구조 문서 검증 스크립트</td></tr>
+          <tr><td class="k">문서 체계</td><td>AGENTS.md에 AI 에이전트용 "23개 규칙". CHANGELOG 3.6MB</td><td><code>structure/</code> 문서를 스크립트로 검증, 소스↔문서 매핑, ADR</td></tr>
+          <tr><td class="k">속도</td><td>얕은 클론 545커밋 중 528개가 10/19~10/22</td><td>얕은 클론(9/14 이후) 1,072커밋, Devin·Claude 공동 저자 표기 다수</td></tr>
+          <tr><td class="k">보안 이력</td><td>코드에 GHSA 권고 약 42건 언급, 그중 31건이 <code>routeGuard.ts</code>(과거 인증 우회)</td><td>사설 취약점 신고 채널만 운영</td></tr>
+        </tbody>
+      </table></div>
+      <p><span class="chip i">추정</span> 둘 다 방어적인 긴 주석, 이슈 번호 고고학, 작은 파일로 잘게 쪼갠 구조가 특징입니다. AI 에이전트가 대부분을 쓰는 개발 방식으로 보입니다. 테스트가 많아도 변경량이 워낙 커서 회귀 위험은 높습니다.</p>
+    </div>
+  </details>
+</section>
+
+<!-- 3 -->
+<section class="chap" id="flow">
+  <div class="head">
+    <span class="num">03</span>
+    <h2>요청 하나가 지나가는 길</h2>
+  </div>
+  <p class="easy">컨베이어 벨트에 비유하면 단계 수는 둘 다 일곱 개쯤입니다. 차이는 <b>가운데서 무엇을 들고 다니느냐</b>입니다. OmniRoute는 OpenAI Chat JSON을, opencodex는 자기만의 타입 IR을 들고 다닙니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 980 330" role="img" aria-label="두 프로젝트의 요청 처리 파이프라인. OmniRoute는 인증, 요청 받기, 콤보 선택, 압축, 형식 번역, 업스트림 호출, 역번역 스트림 순. opencodex는 요청 받기, IR 파싱, 경로 결정, 요청 생성, 업스트림 호출, 이벤트 해석, 출력 인코딩 순.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahm"/></marker>
+      </defs>
+      <text x="10" y="32" class="tom">OmniRoute</text>
+      <g>
+        <rect x="10" y="44" width="120" height="64" rx="8" class="bom"/><text x="70" y="70" text-anchor="middle" class="tb">인증 게이트</text><text x="70" y="91" text-anchor="middle" class="tm">src/proxy.ts</text>
+        <rect x="148" y="44" width="120" height="64" rx="8" class="b"/><text x="208" y="70" text-anchor="middle" class="tb">요청 받기</text><text x="208" y="91" text-anchor="middle" class="tm">handleChat</text>
+        <rect x="286" y="44" width="120" height="64" rx="8" class="b"/><text x="346" y="70" text-anchor="middle" class="tb">콤보·계정 선택</text><text x="346" y="91" text-anchor="middle" class="tm">combo.ts</text>
+        <rect x="424" y="44" width="120" height="64" rx="8" class="b"/><text x="484" y="70" text-anchor="middle" class="tb">압축·캐시</text><text x="484" y="91" text-anchor="middle" class="tm">chatCore.ts</text>
+        <rect x="562" y="44" width="120" height="64" rx="8" class="bom"/><text x="622" y="70" text-anchor="middle" class="tb">형식 번역</text><text x="622" y="91" text-anchor="middle" class="tm">translateRequest</text>
+        <rect x="700" y="44" width="120" height="64" rx="8" class="b"/><text x="760" y="70" text-anchor="middle" class="tb">업스트림 호출</text><text x="760" y="91" text-anchor="middle" class="tm">executors/*</text>
+        <rect x="838" y="44" width="120" height="64" rx="8" class="bom"/><text x="898" y="70" text-anchor="middle" class="tb">역번역 스트림</text><text x="898" y="91" text-anchor="middle" class="tm">stream.ts</text>
+        <line x1="131" y1="76" x2="146" y2="76" class="lnm" marker-end="url(#a2)"/>
+        <line x1="269" y1="76" x2="284" y2="76" class="lnm" marker-end="url(#a2)"/>
+        <line x1="407" y1="76" x2="422" y2="76" class="lnm" marker-end="url(#a2)"/>
+        <line x1="545" y1="76" x2="560" y2="76" class="lnm" marker-end="url(#a2)"/>
+        <line x1="683" y1="76" x2="698" y2="76" class="lnm" marker-end="url(#a2)"/>
+        <line x1="821" y1="76" x2="836" y2="76" class="lnm" marker-end="url(#a2)"/>
+        <path d="M562 120 v10 h396 v-10" class="lom"/>
+        <text x="760" y="148" text-anchor="middle" class="ts">허브 = OpenAI Chat JSON · 직접 번역기가 없으면 원본 → Chat → 대상 두 번 번역</text>
+      </g>
+      <text x="10" y="196" class="tocx">opencodex</text>
+      <g>
+        <rect x="10" y="208" width="120" height="64" rx="8" class="b"/><text x="70" y="234" text-anchor="middle" class="tb">요청 받기</text><text x="70" y="255" text-anchor="middle" class="tm">Bun.serve</text>
+        <rect x="148" y="208" width="120" height="64" rx="8" class="bocx"/><text x="208" y="234" text-anchor="middle" class="tb">IR로 파싱</text><text x="208" y="255" text-anchor="middle" class="tm">parseRequest</text>
+        <rect x="286" y="208" width="120" height="64" rx="8" class="b"/><text x="346" y="234" text-anchor="middle" class="tb">경로 결정</text><text x="346" y="255" text-anchor="middle" class="tm">routeModel</text>
+        <rect x="424" y="208" width="120" height="64" rx="8" class="bocx"/><text x="484" y="234" text-anchor="middle" class="tb">요청 만들기</text><text x="484" y="255" text-anchor="middle" class="tm">buildRequest</text>
+        <rect x="562" y="208" width="120" height="64" rx="8" class="b"/><text x="622" y="234" text-anchor="middle" class="tb">업스트림 호출</text><text x="622" y="255" text-anchor="middle" class="tm">fetch · wss</text>
+        <rect x="700" y="208" width="120" height="64" rx="8" class="bocx"/><text x="760" y="234" text-anchor="middle" class="tb">이벤트로 해석</text><text x="760" y="255" text-anchor="middle" class="tm">parseStream</text>
+        <rect x="838" y="208" width="120" height="64" rx="8" class="bocx"/><text x="898" y="234" text-anchor="middle" class="tb">출력 인코딩</text><text x="898" y="255" text-anchor="middle" class="tm">bridge/sse.ts</text>
+        <line x1="131" y1="240" x2="146" y2="240" class="lnm" marker-end="url(#a2)"/>
+        <line x1="269" y1="240" x2="284" y2="240" class="lnm" marker-end="url(#a2)"/>
+        <line x1="407" y1="240" x2="422" y2="240" class="lnm" marker-end="url(#a2)"/>
+        <line x1="545" y1="240" x2="560" y2="240" class="lnm" marker-end="url(#a2)"/>
+        <line x1="683" y1="240" x2="698" y2="240" class="lnm" marker-end="url(#a2)"/>
+        <line x1="821" y1="240" x2="836" y2="240" class="lnm" marker-end="url(#a2)"/>
+        <path d="M148 284 v10 h810 v-10" class="locx"/>
+        <text x="553" y="312" text-anchor="middle" class="ts">허브 = 타입 IR(OcxParsedRequest) + 이벤트 스트림(AdapterEvent) · Claude Code 요청도 Responses로 바꿔 같은 길로</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>색칠된 칸이 "형식이 바뀌는 지점"입니다. OmniRoute는 번역을 한 단계에서 몰아서 하고, opencodex는 들어올 때(파싱)와 나갈 때(어댑터·인코더)로 나눕니다.</figcaption>
+  </figure>
+  <div class="pair">
+    <details class="deep">
+      <summary><span class="om">OmniRoute</span> 경로 상세</summary>
+      <div class="body">
+        <ol>
+          <li><b>인증 게이트</b>: <code>src/proxy.ts</code>(Next 미들웨어)가 <code>runAuthzPipeline</code>을 실행합니다. <code>/V1/</code>처럼 대문자로 우회하던 취약점(GHSA-jvqc-mp9f-q936) 이후 대소문자 무시 매칭으로 바뀌었습니다. <code>next.config.mjs</code>가 <code>/v1/*</code>를 <code>/api/v1/*</code>로 다시 씁니다.</li>
+          <li><b>라우트 핸들러</b>: <code>/v1/chat/completions</code>, <code>/v1/messages</code>, <code>/v1/responses</code>가 모두 <code>src/sse/handlers/chat.ts</code>의 <code>handleChat</code>으로 모입니다. 각 핸들러가 API 키를 다시 확인하고, 프롬프트 인젝션 가드·입장 제어·초기 keepalive를 거칩니다.</li>
+          <li><b>모델 해석</b>: 별칭을 풀고, 모델 이름이 콤보면 <code>open-sse/services/combo.ts</code>의 <code>handleComboChat</code>, 아니면 <code>handleSingleModelChat</code>으로 갑니다. 단일 모델도 계정 선택을 반복하며 실패한 연결을 빼고 토큰을 갱신합니다.</li>
+          <li><b>핵심 실행</b>: <code>open-sse/handlers/chatCore.ts</code>(3,362줄 + 하위 모듈 약 170개)가 형식 감지 → 압축 → 시맨틱 캐시·멱등성 → <code>translateRequest</code> → executor 조회 → 전송(세마포어, 시작 타임아웃, 스트림 복구) 순으로 처리합니다.</li>
+          <li><b>업스트림</b>: <code>open-sse/executors/base.ts</code>의 <code>BaseExecutor.execute()</code>가 URL·헤더·본문을 만들고 프록시 경유 fetch를 합니다. 제공자별 executor가 약 200개(웹 세션용 <code>*-web.ts</code> 25개 포함).</li>
+          <li><b>응답</b>: <code>open-sse/utils/stream.ts</code>(3,404줄)가 SSE를 파싱해 이벤트마다 <code>translateResponse</code>를 부릅니다.</li>
+        </ol>
+      </div>
+    </details>
+    <details class="deep">
+      <summary><span class="ocx">opencodex</span> 경로 상세</summary>
+      <div class="body">
+        <ol>
+          <li><b>리스너</b>: <code>src/server/index.ts</code>의 <code>Bun.serve</code>. 기본 <code>127.0.0.1:10100</code>. 새로 설치하면 제공자가 <code>openai</code>(ChatGPT 백엔드, forward 모드) 하나뿐입니다.</li>
+          <li><b>Responses 경로</b>: <code>responses/policy-fallback.ts</code> → <code>responses/core.ts:handleResponses</code> → <code>core-pipeline.ts</code>. <code>responses/parser.ts:parseRequest</code>가 본문을 IR로 바꾸고 <code>router.ts:routeModel</code>이 대상을 정합니다.</li>
+          <li><b>분기</b>: 진짜 OpenAI면 거의 그대로 통과(passthrough). 아니면 사이드카(웹 검색·비전·이미지) → <code>runTurn</code>형 어댑터 또는 <code>buildRequest</code>/<code>parseStream</code>형 어댑터.</li>
+          <li><b>어댑터 계약</b>(<code>src/adapters/base.ts</code>): <code>buildRequest(IR) → HTTP 요청</code>, <code>parseStream(Response) → AsyncGenerator&lt;AdapterEvent&gt;</code>. 와이어 계열 11개(openai-chat, openai-responses, anthropic, google, kiro, cursor, devin, zed, ollama-native, codebuddy, command-code).</li>
+          <li><b>출력</b>: <code>bridge/sse.ts:bridgeToResponsesSSE</code>가 이벤트를 Responses SSE로 인코딩합니다.</li>
+          <li><b>Claude Code 경로</b>: <code>claude-messages.ts</code>가 Anthropic 본문을 내부 <code>/v1/responses</code> 요청으로 바꿔 같은 파이프라인을 태운 뒤, <code>claude/outbound.ts</code>가 Responses SSE를 다시 파싱해 Anthropic SSE로 바꿉니다. Chat Completions도 같은 방식입니다.</li>
+          <li><b>WebSocket</b>: Codex 쪽 <code>response.create</code> 프레임을 같은 파이프라인으로 받고, ChatGPT 백엔드로는 <code>wss://</code>로 나갈 수 있습니다(기본 꺼짐).</li>
+        </ol>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- 4 -->
+<section class="chap" id="routing">
+  <div class="head">
+    <span class="num">04</span>
+    <h2>어디로 보낼까: 라우팅과 폴백</h2>
+  </div>
+  <p class="easy">"콤보"는 <b>후보 모델 목록</b>입니다. 앞 후보가 할당량 초과나 서버 오류로 실패하면 다음 후보로 넘어갑니다. 단, <b>답이 한 글자라도 나간 뒤에는 넘어가지 않습니다.</b></p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 820 200" role="img" aria-label="콤보 폴백 예시. 요청이 후보 A에서 429로 실패하고, 후보 B에서 5xx로 서킷이 열리고, 후보 C에서 성공한다.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+      </defs>
+      <rect x="20" y="66" width="140" height="54" rx="8" class="b2"/><text x="90" y="89" text-anchor="middle" class="tb">요청</text><text x="90" y="108" text-anchor="middle" class="tm">model: auto/coding</text>
+      <rect x="210" y="66" width="160" height="54" rx="8" class="brisk"/><text x="290" y="89" text-anchor="middle" class="tb">후보 A</text><text x="290" y="108" text-anchor="middle" class="tm">Claude · 계정 1</text>
+      <rect x="420" y="66" width="160" height="54" rx="8" class="brisk"/><text x="500" y="89" text-anchor="middle" class="tb">후보 B</text><text x="500" y="108" text-anchor="middle" class="tm">GPT · 계정 2</text>
+      <rect x="630" y="66" width="170" height="54" rx="8" class="bok"/><text x="715" y="89" text-anchor="middle" class="tb">후보 C</text><text x="715" y="108" text-anchor="middle" class="tm">GLM · API 키</text>
+      <line x1="162" y1="93" x2="206" y2="93" class="ln" marker-end="url(#a3)"/>
+      <line x1="372" y1="93" x2="416" y2="93" class="lnd" marker-end="url(#a3)"/>
+      <line x1="582" y1="93" x2="626" y2="93" class="lnd" marker-end="url(#a3)"/>
+      <text x="290" y="48" text-anchor="middle" class="trisk">429 할당량 초과</text>
+      <text x="500" y="48" text-anchor="middle" class="trisk">5xx · 서킷 차단</text>
+      <text x="715" y="48" text-anchor="middle" class="tok">200 성공</text>
+      <text x="394" y="144" text-anchor="middle" class="ts">다음 후보</text>
+      <text x="604" y="144" text-anchor="middle" class="ts">다음 후보</text>
+      <text x="290" y="144" text-anchor="middle" class="ts">계정 쿨다운 기록</text>
+      <text x="410" y="184" text-anchor="middle" class="ts">이동은 첫 출력 전까지만 · 같은 제공자 안 계정 순환은 별도 계층</text>
+    </svg>
+    </div>
+    <figcaption>두 프로젝트 모두 이 모양입니다. 차이는 "후보 순서를 정하는 방법"이 OmniRoute는 20여 가지, opencodex는 6가지라는 점입니다.</figcaption>
+  </figure>
+  <div class="pair">
+    <details class="deep">
+      <summary><span class="om">OmniRoute</span> 라우팅 상세</summary>
+      <div class="body">
+        <p><b>콤보 전략</b>(<code>open-sse/services/combo/strategyRegistry.ts</code>): priority, weighted, round-robin, context-relay, fill-first, p2c, random, strict-random, least-used, cost-optimized, reset-aware, reset-window, headroom, quota-weighted, quota-share, auto, lkgp, context-optimized, cache-optimized, fusion(여러 모델 + 심판), pipeline(앞 모델 출력을 다음 입력으로). 전략마다 정렬·고정·예약·프롬프트 캐시 친화도 같은 특성을 가집니다.</p>
+        <p><b>auto</b>: <code>autoCombo/scoring.ts</code>가 할당량·상태·비용·지연·작업 적합도·안정성·컨텍스트/캐시 친화도·리셋 창·품질 등을 가중 합산합니다. <code>auto/coding</code>, <code>auto/fast</code>, <code>auto/cheap</code>, <code>auto/subscription</code> 같은 변형이 있습니다.</p>
+        <p><b>계정 선택</b>(<code>src/sse/services/auth.ts</code>): 기본 <code>fill-first</code>. round-robin, p2c, random, least-used, expiry-first, cost-optimized, strict-random.</p>
+        <p><b>실패 처리</b>: <code>accountFallback.ts</code>(2,565줄)가 정규식으로 오류를 분류합니다(차단 계정, 크레딧 소진, 토큰 무효, 컨텍스트 초과, 속도 제한, 모델 단위 400). 지수 백오프, Retry-After, 서킷 브레이커, 제공자별 할당량 조회기 약 30개, 차단 계정 자동 비활성화가 있습니다.</p>
+      </div>
+    </details>
+    <details class="deep">
+      <summary><span class="ocx">opencodex</span> 라우팅 상세</summary>
+      <div class="body">
+        <p><b>모델 해석 순서</b>(<code>router.ts:routeModelInternal</code>): ① <code>policy/&lt;id&gt;</code> 프로필 ② Codex 계정 네임스페이스(<code>acct/gpt-*</code>) ③ 콤보 ④ <code>provider/model</code> ⑤ <code>gpt-*</code>·<code>o3-</code> 등은 openai ⑥ 제공자 기본 모델 ⑦ 접두사 패턴 ⑧ 모델 목록 ⑨ 별칭(모호하면 오류) ⑩ 기본 제공자.</p>
+        <p><b>콤보 전략</b>: failover, round-robin, random, least-used, reset-window, jev(외부 결정 서비스가 대상과 effort를 고름, 기본 <code>api.typesafe.ai</code>).</p>
+        <p><b>OCX-11 폴백 정책</b>(<code>src/routing/fallback-policy.ts</code>): 폴백을 범위별로 끌 수 있습니다. 우선순위는 라우트 &gt; 제공자 &gt; 전역. 거부되면 <code>fallback_refused</code>와 <code>x-opencodex-fallback: refused</code> 헤더. 같은 풀 안의 계정·키 순환은 끌 수 없는 "내부 복원력"으로 따로 취급합니다.</p>
+        <p><b>재시도</b>(<code>lib/upstream-retry.ts</code>): 최초 1회 + 일시 오류 재시도 2회. 출력이 관찰되면 재전송 금지(<code>request-resend-gate.ts</code>).</p>
+        <p><b>ChatGPT 계정 풀</b>: 스레드·캐시 친화도로 대화 중 계정이 바뀌지 않게 하고, 할당량 임계치로 순환합니다.</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- 5 -->
+<section class="chap" id="auth">
+  <div class="head">
+    <span class="num">05</span>
+    <h2>계정과 비밀 정보는 어디에</h2>
+  </div>
+  <p class="easy">API 키만 쓰면 단순합니다. 문제는 <b>구독 계정</b>(Claude Pro/Max, ChatGPT, Copilot)입니다. 두 프로젝트 모두 공식 CLI의 로그인 방식을 빌려 씁니다.</p>
+  <div class="tw"><table class="wide">
+    <thead><tr><th></th><th class="om">OmniRoute</th><th class="ocx">opencodex</th></tr></thead>
+    <tbody>
+      <tr><td class="k">인증 종류</td><td><code>apikey</code> · <code>oauth</code> · <code>web-cookie</code> · <code>noauth</code></td><td>key 약 84 · oauth 15 · local 3 · forward 1 (프리셋 약 104개)</td></tr>
+      <tr><td class="k">구독 OAuth</td><td>Claude(PKCE, <code>claude.ai/oauth/authorize</code>), Codex, Copilot(device flow + <code>copilot_internal</code>), Gemini CLI, Antigravity, Kiro, Cursor, Qoder, Trae, Zed 등</td><td>Claude Pro/Max, ChatGPT, Copilot, Antigravity, Cursor, Zed, Devin, Kiro, xAI, Kimi 등</td></tr>
+      <tr><td class="k">공식 client ID</td><td>XOR로 가려 저장. 주석에 "스캐너 정규식 회피용"이라고 적힘 (<code>publicCreds.ts</code>)</td><td>base64로 가려 저장 (<code>oauth/anthropic.ts</code>)</td></tr>
+      <tr><td class="k">로컬 토큰 가져오기</td><td>Cursor <code>state.vscdb</code>, <code>~/.codex/auth.json</code>, CLIProxyAPI 가져오기</td><td>macOS 키체인 "Claude Code-credentials", <code>~/.claude/.credentials.json</code>, Grok·Command Code·Codex 토큰</td></tr>
+      <tr><td class="k">저장소</td><td>SQLite <code>~/.omniroute/storage.sqlite</code>. AES-256-GCM(<code>enc:v1:</code>)이지만 키가 없으면 평문, CLI는 키를 DB와 같은 폴더 <code>.env</code>에 생성</td><td>JSON <code>~/.opencodex/config.json</code>(API 키 기본 평문, 권한 0600), OAuth는 <code>auth.json</code>. OS 키체인 저장은 선택</td></tr>
+    </tbody>
+  </table></div>
+  <details class="deep">
+    <summary>자세히: 클라이언트 설정을 바꾸는 방식</summary>
+    <div class="body">
+      <p><b class="ocx">opencodex</b>는 <code>$CODEX_HOME/config.toml</code>에 <code>openai_base_url</code>(루프백), 모델 카탈로그 경로, 실시간 WS 주소를 넣고, 주입 기록(<code>opencodex-journal.json</code>)을 남기며 codex 실행 shim을 설치합니다. <code>ocx stop</code>·<code>restore</code>로 원상복구합니다. Claude Code는 ① <code>ocx claude</code>가 <code>ANTHROPIC_BASE_URL</code> 등 환경변수로 실행하거나 ② intercept 모드가 <code>~/.claude/settings.json</code>에 <code>HTTPS_PROXY</code>와 로컬 CA를 넣어 <code>api.anthropic.com</code>을 가로챕니다. Claude Desktop은 OS 키체인에 CA를 신뢰시키고 <code>claude.ai</code>를 가로챕니다.</p>
+      <p><b class="om">OmniRoute</b>는 CLI가 Claude Code·Codex·Cursor·Cline 설정을 자동으로 고쳐 OmniRoute를 가리키게 합니다. 더 나아가 <code>src/mitm/</code>이 루트 CA를 OS에 설치하고 hosts 파일을 관리자 권한으로 고친 뒤 :443에서 <code>api.anthropic.com</code>, <code>cloudcode-pa.googleapis.com</code>, Copilot·Cursor·Codex 호스트를 가로챕니다. 리눅스용 iptables TPROXY + C 애드온도 실험 단계로 있습니다.</p>
+    </div>
+  </details>
+</section>
+
+<!-- 6 -->
+<section class="chap" id="hub">
+  <div class="head">
+    <span class="num">06</span>
+    <h2>번역의 심장: 중간 기준(허브) 고르기</h2>
+  </div>
+  <p class="easy">통역사가 머릿속에서 어떤 언어로 생각하느냐의 문제입니다. <b>단어가 적은 언어로 생각하면 뜻이 빠집니다.</b> OmniRoute는 칸이 적은 Chat 형식으로 생각해서 Claude의 "서명"이 중간에 사라집니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 940 300" role="img" aria-label="허브 비교. OmniRoute는 Claude 응답을 OpenAI Chat 허브로 바꿀 때 signature가 들어갈 칸이 없어 버려진다. opencodex는 타입 IR에 thinking_signature 이벤트가 있어 Responses의 encrypted_content까지 전달된다.">
+      <defs>
+        <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahm"/></marker>
+      </defs>
+      <rect x="6" y="6" width="456" height="288" rx="10" class="b" style="fill:none"/>
+      <rect x="478" y="6" width="456" height="288" rx="10" class="b" style="fill:none"/>
+      <text x="24" y="32" class="tom">OmniRoute · Chat JSON 허브</text>
+      <text x="496" y="32" class="tocx">opencodex · 타입 IR 허브</text>
+
+      <!-- left columns -->
+      <rect x="30" y="50" width="120" height="44" rx="8" class="b2"/><text x="90" y="77" text-anchor="middle" class="tb">Claude SSE</text>
+      <rect x="175" y="50" width="120" height="44" rx="8" class="bom"/><text x="235" y="77" text-anchor="middle" class="tb">Chat 청크</text>
+      <rect x="320" y="50" width="120" height="44" rx="8" class="b2"/><text x="380" y="77" text-anchor="middle" class="tb">Responses SSE</text>
+      <g>
+        <rect x="35" y="116" width="110" height="24" rx="12" class="b"/><text x="90" y="132" text-anchor="middle" class="tm">text</text>
+        <rect x="35" y="156" width="110" height="24" rx="12" class="b"/><text x="90" y="172" text-anchor="middle" class="tm">thinking</text>
+        <rect x="35" y="196" width="110" height="24" rx="12" class="b"/><text x="90" y="212" text-anchor="middle" class="tm">signature</text>
+        <rect x="35" y="236" width="110" height="24" rx="12" class="b"/><text x="90" y="252" text-anchor="middle" class="tm">tool_use</text>
+
+        <rect x="180" y="116" width="110" height="24" rx="12" class="b"/><text x="235" y="132" text-anchor="middle" class="tm">content</text>
+        <rect x="180" y="156" width="110" height="24" rx="12" class="b"/><text x="235" y="172" text-anchor="middle" class="tm" style="font-size:9.5px">reasoning_content</text>
+        <rect x="180" y="196" width="110" height="24" rx="12" class="bdash"/><text x="235" y="212" text-anchor="middle" class="trisk">칸 없음 ✕</text>
+        <rect x="180" y="236" width="110" height="24" rx="12" class="b"/><text x="235" y="252" text-anchor="middle" class="tm">tool_calls</text>
+
+        <rect x="325" y="116" width="110" height="24" rx="12" class="b"/><text x="380" y="132" text-anchor="middle" class="tm">output_text</text>
+        <rect x="325" y="156" width="110" height="24" rx="12" class="b"/><text x="380" y="172" text-anchor="middle" class="tm">summary만</text>
+        <rect x="325" y="196" width="110" height="24" rx="12" class="b2" style="opacity:.5"/><text x="380" y="212" text-anchor="middle" class="tm">없음</text>
+        <rect x="325" y="236" width="110" height="24" rx="12" class="b"/><text x="380" y="252" text-anchor="middle" class="tm">function_call</text>
+
+        <line x1="146" y1="128" x2="178" y2="128" class="lnm" marker-end="url(#a4)"/>
+        <line x1="146" y1="168" x2="178" y2="168" class="lnm" marker-end="url(#a4)"/>
+        <line x1="146" y1="208" x2="178" y2="208" class="lrisk"/>
+        <line x1="146" y1="248" x2="178" y2="248" class="lnm" marker-end="url(#a4)"/>
+        <line x1="291" y1="128" x2="323" y2="128" class="lnm" marker-end="url(#a4)"/>
+        <line x1="291" y1="168" x2="323" y2="168" class="lnm" marker-end="url(#a4)"/>
+        <line x1="291" y1="248" x2="323" y2="248" class="lnm" marker-end="url(#a4)"/>
+      </g>
+      <text x="234" y="284" text-anchor="middle" class="ts">빠진 정보는 _preserveReasoningContent 같은 밑줄 플래그로 땜질</text>
+
+      <!-- right columns -->
+      <rect x="502" y="50" width="120" height="44" rx="8" class="b2"/><text x="562" y="77" text-anchor="middle" class="tb">Anthropic SSE</text>
+      <rect x="647" y="50" width="120" height="44" rx="8" class="bocx"/><text x="707" y="77" text-anchor="middle" class="tb">AdapterEvent</text>
+      <rect x="792" y="50" width="120" height="44" rx="8" class="b2"/><text x="852" y="77" text-anchor="middle" class="tb">Responses SSE</text>
+      <g>
+        <rect x="507" y="116" width="110" height="24" rx="12" class="b"/><text x="562" y="132" text-anchor="middle" class="tm">text</text>
+        <rect x="507" y="156" width="110" height="24" rx="12" class="b"/><text x="562" y="172" text-anchor="middle" class="tm">thinking</text>
+        <rect x="507" y="196" width="110" height="24" rx="12" class="b"/><text x="562" y="212" text-anchor="middle" class="tm">signature</text>
+        <rect x="507" y="236" width="110" height="24" rx="12" class="b"/><text x="562" y="252" text-anchor="middle" class="tm">tool_use</text>
+
+        <rect x="652" y="116" width="110" height="24" rx="12" class="b"/><text x="707" y="132" text-anchor="middle" class="tm">text_delta</text>
+        <rect x="652" y="156" width="110" height="24" rx="12" class="b"/><text x="707" y="172" text-anchor="middle" class="tm">thinking_delta</text>
+        <rect x="652" y="196" width="110" height="24" rx="12" class="bocx"/><text x="707" y="212" text-anchor="middle" class="tm" style="font-size:9.5px">thinking_signature</text>
+        <rect x="652" y="236" width="110" height="24" rx="12" class="b"/><text x="707" y="252" text-anchor="middle" class="tm">tool_call_*</text>
+
+        <rect x="797" y="116" width="110" height="24" rx="12" class="b"/><text x="852" y="132" text-anchor="middle" class="tm">output_text</text>
+        <rect x="797" y="156" width="110" height="24" rx="12" class="b"/><text x="852" y="172" text-anchor="middle" class="tm">reasoning</text>
+        <rect x="797" y="196" width="110" height="24" rx="12" class="bocx"/><text x="852" y="212" text-anchor="middle" class="tm" style="font-size:9.5px">encrypted_content</text>
+        <rect x="797" y="236" width="110" height="24" rx="12" class="b"/><text x="852" y="252" text-anchor="middle" class="tm">function_call</text>
+
+        <line x1="618" y1="128" x2="650" y2="128" class="lnm" marker-end="url(#a4)"/>
+        <line x1="618" y1="168" x2="650" y2="168" class="lnm" marker-end="url(#a4)"/>
+        <line x1="618" y1="208" x2="650" y2="208" class="locx" marker-end="url(#a4)"/>
+        <line x1="618" y1="248" x2="650" y2="248" class="lnm" marker-end="url(#a4)"/>
+        <line x1="763" y1="128" x2="795" y2="128" class="lnm" marker-end="url(#a4)"/>
+        <line x1="763" y1="168" x2="795" y2="168" class="lnm" marker-end="url(#a4)"/>
+        <line x1="763" y1="208" x2="795" y2="208" class="locx" marker-end="url(#a4)"/>
+        <line x1="763" y1="248" x2="795" y2="248" class="lnm" marker-end="url(#a4)"/>
+      </g>
+      <text x="706" y="284" text-anchor="middle" class="ts">서명은 ocxr1: 봉투에 담겨 클라이언트까지 감</text>
+    </svg>
+    </div>
+    <figcaption>네 줄 중 세 번째 줄(서명)만 보면 됩니다. 왼쪽은 중간에서 끊기고, 오른쪽은 끝까지 갑니다. Claude는 다음 턴에 이 서명이 없으면 thinking을 받아주지 않습니다.</figcaption>
+  </figure>
+  <details class="deep">
+    <summary>자세히: 두 허브의 실제 코드</summary>
+    <div class="body">
+      <h3 class="ocx">opencodex: 타입 IR (<code>src/types/request.ts</code>)</h3>
+      <ul>
+        <li>메시지 역할을 <code>user | assistant | developer | toolResult</code> 넷으로 정규화합니다.</li>
+        <li>assistant 내용은 <code>text | thinking | toolCall</code> 파트 배열. <code>thinking</code>에 <code>signature</code>와 <code>redacted[]</code>, <code>toolCall</code>에 Gemini용 <code>thoughtSignature</code>가 있습니다.</li>
+        <li>응답은 이벤트 합 타입: <code>heartbeat</code>, <code>text_delta(phase?)</code>, <code>thinking_delta</code>, <code>thinking_signature</code>, <code>redacted_thinking</code>, <code>reasoning_raw_delta</code>, <code>tool_call_start/delta/end</code>, <code>web_search_call_begin/end</code>, <code>done</code>, <code>incomplete</code>, <code>error</code>.</li>
+        <li>약점: 요청 IR에 <code>_</code>로 시작하는 임시 필드가 50개 넘게 붙어 있습니다. 제공자별 상태가 IR로 새어 들어온 흔적입니다.</li>
+      </ul>
+      <h3 class="om">OmniRoute: 레지스트리 + Chat 허브 (<code>open-sse/translator/</code>)</h3>
+      <ul>
+        <li><code>registry.ts</code>는 <code>"from:to"</code> 키로 요청 번역기와 응답 번역기를 담는 Map 두 개입니다. 타입은 <code>Record&lt;string, unknown&gt;</code>.</li>
+        <li><code>translateRequest</code>(<code>index.ts:342</code>): 원본과 대상이 둘 다 OpenAI가 아니고 직접 번역기가 있으면 그걸 쓰고, 아니면 원본 → OpenAI → 대상. 중간 정보는 credentials 객체에 <code>_targetFormat</code>, <code>_preserveReasoningContent</code>, <code>_signatureNamespace</code>, <code>_ensureUserTurn</code>을 끼워 넘깁니다.</li>
+        <li><code>translateResponse</code>: 청크마다 같은 방식. 두 단계가 <code>state</code> 객체 하나를 공유합니다.</li>
+        <li>번역기 코드 약 2.4만 줄. 가장 큰 파일은 <code>response/openai-responses.ts</code>(1,577줄), <code>request/openai-to-kiro.ts</code>(1,131줄).</li>
+        <li><code>response/claude-to-openai.ts:188</code>: <code>signature_delta</code>는 "Never emitted to the client". 그 결과 <code>request/openai-to-claude.ts:739~815</code>에 서명 없는 thinking을 버리거나 서명 없는 <code>redacted_thinking</code>으로 바꾸는 보정이 생겼습니다. 주석은 Anthropic이 이걸 받아준다고 하지만 이 보고서에서는 확인하지 못했습니다.</li>
+      </ul>
+    </div>
+  </details>
+  <div class="callout">
+    <span class="lab">설계 포인트</span>
+    <p>허브는 "가장 흔한 형식"이 아니라 <b>"가장 많이 담을 수 있는 형식의 의미"</b>로 정하세요. 지금 기준이면 Responses + Anthropic thinking의 합집합입니다. 그리고 문자열 키 JSON이 아니라 타입으로 정의하세요.</p>
+  </div>
+</section>
+
+<!-- 7 -->
+<section class="chap" id="rules">
+  <div class="head">
+    <span class="num">07</span>
+    <h2>제공자가 거절하는 대화 모양</h2>
+  </div>
+  <p class="easy">제공자마다 "이런 대화 기록은 안 받아"라는 규칙이 있습니다. 두 프로젝트가 고생하며 모은 규칙이 <b>거의 똑같습니다.</b> 처음부터 목록으로 만들어 두면 됩니다.</p>
+  <div class="tw"><table class="wide">
+    <thead><tr><th>규칙</th><th class="ocx">opencodex <span class="muted mono" style="font-weight:400">adapters/anthropic.ts:779~912</span></th><th class="om">OmniRoute</th></tr></thead>
+    <tbody>
+      <tr><td class="k">tool_use 바로 뒤에 tool_result</td><td>바로 뒤의 결과만 짝짓기. 결과 없으면 <code>is_error</code> 합성 블록, 짝 없는 결과는 텍스트로</td><td><code>fixMissingToolResponses</code>, <code>stripOrphanedToolResults</code></td></tr>
+      <tr><td class="k">tool call id 정규화</td><td><code>callIds.allocate/lookup</code>을 요청·결과 양쪽에 똑같이</td><td><code>ensureToolCallIds</code> (Mistral 9자 id 포함)</td></tr>
+      <tr><td class="k">assistant로 끝나면 안 됨</td><td>끝에 <code>"(continue)"</code> user 메시지</td><td>GLM 계열에만 <code>"(continue)"</code></td></tr>
+      <tr><td class="k">빈 텍스트 금지</td><td><code>"(empty)"</code>로 대체</td><td>제공자별 개별 처리</td></tr>
+      <tr><td class="k">system은 맨 앞</td><td>IR에서 <code>systemPrompt[]</code>로 처음부터 분리</td><td>대상별로 끌어올림·강등. 순서가 꼬인 버그 기록(#13948)</td></tr>
+      <tr><td class="k">서명 thinking은 원래 순서</td><td>서명이 있으면 원래 블록 순서 유지, 없으면 text → tool_use 순</td><td>(서명이 허브에서 빠져 해당 없음)</td></tr>
+      <tr><td class="k">가짜 서명 금지</td><td><code>isLikelyRealAnthropicThinkingSignature</code> 허용 목록으로 걸러냄</td><td>기본 서명으로 채우던 방식이 400을 영구화해 제거(#6953)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout">
+    <span class="lab">설계 포인트</span>
+    <p>이 규칙들은 <b>대상 어댑터의 직렬화 단계 한 곳</b>에서 마지막에 적용하세요. 공통 단계에서 미리 고치면 뒤 단계가 이미 바뀐 위치를 물려받아 대화 순서가 꼬입니다(OmniRoute #13948).</p>
+  </div>
+</section>
+
+<!-- 8 -->
+<section class="chap" id="stream">
+  <div class="head">
+    <span class="num">08</span>
+    <h2>스트림 조립: 한 번에 한 칸만 열기</h2>
+  </div>
+  <p class="easy">답은 조각조각 흘러옵니다. opencodex는 <b>상자를 한 번에 하나만 열어 두고</b>, 다른 종류 조각이 오면 지금 상자를 닫고 새 상자를 엽니다. 단순하지만 실수가 적습니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 780 260" role="img" aria-label="열린 항목 하나 상태기계. thinking, text, tool call, text, done 이벤트가 차례로 reasoning, commentary 메시지, function_call, final_answer 메시지, completed 출력 항목으로 바뀐다.">
+      <defs>
+        <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahocx"/></marker>
+      </defs>
+      <text x="20" y="24" class="ts">어댑터가 보내는 이벤트</text>
+      <rect x="20" y="36" width="130" height="30" rx="6" class="b2"/><text x="85" y="56" text-anchor="middle" class="tm">thinking_delta ×n</text>
+      <rect x="165" y="36" width="100" height="30" rx="6" class="b2"/><text x="215" y="56" text-anchor="middle" class="tm">text_delta</text>
+      <rect x="280" y="36" width="190" height="30" rx="6" class="b2"/><text x="375" y="56" text-anchor="middle" class="tm">tool_call start·delta·end</text>
+      <rect x="485" y="36" width="100" height="30" rx="6" class="b2"/><text x="535" y="56" text-anchor="middle" class="tm">text_delta</text>
+      <rect x="600" y="36" width="160" height="30" rx="6" class="b2"/><text x="680" y="56" text-anchor="middle" class="tm">done</text>
+
+      <line x1="85" y1="68" x2="85" y2="158" class="locx" marker-end="url(#a5)"/>
+      <line x1="215" y1="68" x2="215" y2="158" class="locx" marker-end="url(#a5)"/>
+      <line x1="375" y1="68" x2="375" y2="158" class="locx" marker-end="url(#a5)"/>
+      <line x1="535" y1="68" x2="535" y2="158" class="locx" marker-end="url(#a5)"/>
+      <line x1="680" y1="68" x2="680" y2="158" class="locx" marker-end="url(#a5)"/>
+
+      <line x1="157" y1="30" x2="157" y2="228" class="lnd"/>
+      <line x1="272" y1="30" x2="272" y2="228" class="lnd"/>
+      <line x1="477" y1="30" x2="477" y2="228" class="lnd"/>
+      <line x1="592" y1="30" x2="592" y2="228" class="lnd"/>
+      <text x="164" y="112" class="ts">앞 칸 닫기</text>
+
+      <text x="20" y="150" class="ts">Codex가 받는 출력 항목</text>
+      <rect x="20" y="162" width="130" height="58" rx="8" class="bocx"/><text x="85" y="186" text-anchor="middle" class="tb">reasoning · 0</text><text x="85" y="206" text-anchor="middle" class="tm">summary_text</text>
+      <rect x="165" y="162" width="100" height="58" rx="8" class="b"/><text x="215" y="186" text-anchor="middle" class="tb">message · 1</text><text x="215" y="206" text-anchor="middle" class="tm">commentary</text>
+      <rect x="280" y="162" width="190" height="58" rx="8" class="bocx"/><text x="375" y="186" text-anchor="middle" class="tb">function_call · 2</text><text x="375" y="206" text-anchor="middle" class="tm">인자 JSON 검증 후 완료</text>
+      <rect x="485" y="162" width="100" height="58" rx="8" class="b"/><text x="535" y="186" text-anchor="middle" class="tb">message · 3</text><text x="535" y="206" text-anchor="middle" class="tm">final_answer</text>
+      <rect x="600" y="162" width="160" height="58" rx="8" class="b2"/><text x="680" y="186" text-anchor="middle" class="tb">response.completed</text><text x="680" y="206" text-anchor="middle" class="tm">usage 포함</text>
+      <text x="390" y="250" text-anchor="middle" class="ts">점선마다 열린 항목을 닫고(.done) output_index를 하나 올림</text>
+    </svg>
+    </div>
+    <figcaption>같은 text_delta라도 뒤에 tool call이 오면 "중간 설명(commentary)", 마지막에 오면 "최종 답(final_answer)"으로 나중에 분류합니다. Chat 형식에는 이 구분이 없어서 라우터가 추론해야 합니다.</figcaption>
+  </figure>
+  <div class="pair">
+    <details class="deep">
+      <summary><span class="ocx">opencodex</span> 상태기계 상세 <span class="sub">bridge/sse.ts</span></summary>
+      <div class="body">
+        <ul>
+          <li>열린 항목 변수는 <code>currentMsg</code>, <code>currentReasoning</code>, <code>currentRawReasoning</code>, <code>currentToolCall</code>, <code>currentWebSearch</code>. 새 종류 이벤트가 오면 <code>closeCurrent*()</code>가 <code>.done</code> 계열을 보내고 <code>outputIndex++</code>.</li>
+          <li><code>closeCurrentMessage</code>는 <code>output_text.done</code> → <code>content_part.done</code> → <code>output_item.done</code>을 꼭 보냅니다. 주석: 이게 없으면 Codex가 메시지를 잘린 것으로 표시함.</li>
+          <li><code>thinking_signature</code>는 받자마자 쓰지 않고 다음 의미 있는 이벤트까지 보류. 서명 갱신 때문에 블록이 하나 더 생기거나 다음 thinking에 붙는 것을 막습니다.</li>
+          <li><code>redacted_thinking</code>은 시작 시점에 완성된 블록이라 즉시 봉투로 내보냅니다.</li>
+          <li>웹 검색 출처는 다음 메시지의 <code>url_citation</code> 주석으로 붙입니다.</li>
+          <li>Claude Code 출력은 이 Responses SSE를 <b>다시 파싱</b>해서 Anthropic SSE로 만듭니다(<code>claude/outbound.ts</code>). 20초마다 <code>ping</code>, 스트림 중간 오류는 <code>{type:"error"}</code>. 파이프라인 하나를 유지하는 대신 직렬화가 두 번입니다.</li>
+        </ul>
+      </div>
+    </details>
+    <details class="deep">
+      <summary><span class="om">OmniRoute</span> 상태 관리 상세 <span class="sub">translator/index.ts</span></summary>
+      <div class="body">
+        <ul>
+          <li><code>initState</code>가 플래그 수십 개짜리 객체를 만듭니다: <code>textBlockStarted</code>, <code>inThinkingBlock</code>, <code>toolCalls: Map</code>, <code>msgItemAdded{}</code>, <code>funcArgsBuf{}</code>, <code>reasoningBuf</code>, <code>completedSent</code> 등.</li>
+          <li>직접 경로가 아니면 Claude → OpenAI 번역기와 OpenAI → Responses 번역기가 <b>같은 state</b>를 같이 씁니다.</li>
+          <li>그 흔적: <code>&lt;/think&gt;</code> 닫는 태그를 언제 보낼지(#5123: tool call 앞에 가짜 텍스트로 끼어듦, #5245: 그대로 노출되는 클라이언트), tool call 도중 끊기면 finish_reason이 <code>stop</code>이 되던 문제(<code>synthesizeCompletedToolCalls.ts</code>), 일괄 completed 이벤트만 보내는 업스트림 대응.</li>
+          <li>Responses 출력 번역기(<code>response/openai-responses.ts</code>)는 reasoning 요약은 만들지만 다른 제공자의 서명을 <code>encrypted_content</code>로 싣지는 않습니다.</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+  <div class="callout">
+    <span class="lab">설계 포인트</span>
+    <p>출력 쪽은 <b>"열린 항목 하나 + 명시적 닫기"</b> 상태기계로, 출력 형식마다 인코더를 하나씩 두세요. 이벤트 → 인코더 구조면 번역기를 N×M개가 아니라 N+M개만 만들면 됩니다.</p>
+  </div>
+</section>
+
+<!-- 9 -->
+<section class="chap" id="tools">
+  <div class="head">
+    <span class="num">09</span>
+    <h2>tool call: 바로 보낼까, 모았다 보낼까</h2>
+  </div>
+  <p class="easy">도구 호출 인자는 JSON 조각으로 옵니다. 바로바로 넘기면 빠르지만 <b>마지막 조각이 깨지면 되돌릴 수 없습니다.</b> 다 모아서 검사한 뒤 넘기면 안전합니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 820 260" role="img" aria-label="tool call 인자 전달 방식 비교. 위쪽은 조각을 즉시 전달해 마지막 조각이 끊기면 클라이언트가 이미 깨진 인자를 받는다. 아래쪽은 버퍼에 모아 JSON 검증 후 한 번에 전달한다.">
+      <defs>
+        <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahm"/></marker>
+        <marker id="a6g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahocx"/></marker>
+      </defs>
+      <text x="20" y="22" class="ts">즉시 전달 · OmniRoute 전반, opencodex Anthropic 경로</text>
+      <rect x="20" y="34" width="80" height="26" rx="5" class="b2"/><text x="60" y="51" text-anchor="middle" class="tm">{"path":</text>
+      <rect x="110" y="34" width="80" height="26" rx="5" class="b2"/><text x="150" y="51" text-anchor="middle" class="tm">"a.ts",</text>
+      <rect x="200" y="34" width="80" height="26" rx="5" class="b2"/><text x="240" y="51" text-anchor="middle" class="tm">"line":</text>
+      <rect x="290" y="34" width="80" height="26" rx="5" class="brisk"/><text x="330" y="51" text-anchor="middle" class="tm">(끊김)</text>
+      <line x1="60" y1="62" x2="60" y2="88" class="lnm" marker-end="url(#a6)"/>
+      <line x1="150" y1="62" x2="150" y2="88" class="lnm" marker-end="url(#a6)"/>
+      <line x1="240" y1="62" x2="240" y2="88" class="lnm" marker-end="url(#a6)"/>
+      <rect x="20" y="92" width="350" height="30" rx="6" class="b"/><text x="195" y="112" text-anchor="middle" class="t">클라이언트: 이미 세 조각을 받음</text>
+      <text x="400" y="112" class="trisk">→ 되돌릴 수 없음. 할 수 있는 건 실패 통보뿐</text>
+
+      <text x="20" y="160" class="ts">모았다가 검증 후 전달 · opencodex Chat 경로</text>
+      <rect x="20" y="172" width="80" height="26" rx="5" class="b2"/><text x="60" y="189" text-anchor="middle" class="tm">{"path":</text>
+      <rect x="110" y="172" width="80" height="26" rx="5" class="b2"/><text x="150" y="189" text-anchor="middle" class="tm">"a.ts",</text>
+      <rect x="200" y="172" width="80" height="26" rx="5" class="b2"/><text x="240" y="189" text-anchor="middle" class="tm">"line":</text>
+      <rect x="290" y="172" width="80" height="26" rx="5" class="b2"/><text x="330" y="189" text-anchor="middle" class="tm">12}</text>
+      <line x1="372" y1="185" x2="408" y2="185" class="lnm" marker-end="url(#a6)"/>
+      <rect x="412" y="164" width="140" height="42" rx="8" class="bocx"/><text x="482" y="183" text-anchor="middle" class="tb">버퍼</text><text x="482" y="199" text-anchor="middle" class="tm">JSON.parse 검사</text>
+      <line x1="554" y1="185" x2="590" y2="185" class="locx" marker-end="url(#a6g)"/>
+      <rect x="594" y="164" width="206" height="42" rx="8" class="b"/><text x="697" y="183" text-anchor="middle" class="tb">start · 완성본 · end</text><text x="697" y="199" text-anchor="middle" class="tm">한 번에 전달</text>
+      <text x="482" y="232" text-anchor="middle" class="ts">실패하면 response.failed · 텍스트로 쓴 tool call도 여기서 복구</text>
+    </svg>
+    </div>
+    <figcaption>인자가 다 모일 때까지 클라이언트도 도구를 실행할 수 없으니, 모았다 보내도 체감 지연은 거의 없습니다.</figcaption>
+  </figure>
+  <div class="tw"><table class="wide">
+    <thead><tr><th>주제</th><th class="ocx">opencodex</th><th class="om">OmniRoute</th></tr></thead>
+    <tbody>
+      <tr><td class="k">병렬 tool call (Chat 업스트림)</td><td><code>index</code>·<code>id</code>로 조립 → finish에서 검증 → start/delta/end 일괄 (<code>openai-chat.ts:273~</code>)</td><td>받는 즉시 델타 전달</td></tr>
+      <tr><td class="k">깨진 인자 JSON</td><td>버퍼 경로는 복구, 실시간 경로는 <code>tool_call_end</code>에서 검사 후 <code>response.failed</code> (<code>sse.ts:1180</code>)</td><td>이스케이프 보정(<code>fixDoubleEscapedTabs</code> 등)</td></tr>
+      <tr><td class="k">tool call을 텍스트로 쓰는 모델</td><td><code>StandaloneBareToolCallBuffer</code>가 텍스트를 잡아두고 tool call로 복구</td><td>DeepSeek web 등 일부 경로</td></tr>
+      <tr><td class="k">본문 속 <code>&lt;think&gt;</code></td><td><code>createChatContentSplitter</code> (제공자별 선택)</td><td><code>applyThinkTag</code></td></tr>
+      <tr><td class="k">custom tool (apply_patch)</td><td><code>{input: string}</code> 함수 tool로 낮춤 → 응답에서 <code>custom_tool_call</code>로 복원, 깨진 패치 봉투 수리</td><td>같은 방식 (<code>request/openai-responses.ts:485</code>)</td></tr>
+      <tr><td class="k">이름 변환</td><td><code>toolNames.toWire/fromWire</code>, Codex namespace 평탄화, <code>tool_search</code> 낮추기</td><td><code>toolNameMap</code> (Claude OAuth 위장용 이름 변환 포함)</td></tr>
+      <tr><td class="k">MiniMax식 누적 reasoning</td><td>청크마다 전체 문자열을 다시 보내는 형식을 접두사 비교로 델타화</td><td>(해당 기능 확인 못 함)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout">
+    <span class="lab">설계 포인트</span>
+    <p>이벤트의 <code>tool_call_delta</code>에 id나 index를 두지 마세요. <b>병렬 호출을 한 줄로 세우는 일은 어댑터 책임</b>으로 두면 출력 상태기계가 아주 작아집니다. 그리고 클라이언트가 실행할 수 없는 호출은 절대 "완료"로 보내지 마세요.</p>
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="chap" id="reasoning">
+  <div class="head">
+    <span class="num">10</span>
+    <h2>생각(reasoning)을 다음 턴까지 기억하기</h2>
+  </div>
+  <p class="easy">Claude나 DeepSeek은 "지난번에 네가 한 생각을 그대로 돌려줘"라고 요구합니다. 그 기억을 <b>손님(클라이언트) 주머니에 넣어 줄지</b>, <b>가게(서버) 금고에 둘지</b>가 두 프로젝트의 가장 큰 차이입니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 940 300" role="img" aria-label="reasoning 보존 방식 비교. opencodex는 서명을 ocxr1 봉투에 담아 클라이언트에 주고 다음 턴에 돌려받는다. OmniRoute는 reasoning을 메모리와 SQLite 캐시에 저장하고 다음 턴에 조회해 다시 끼운다.">
+      <defs>
+        <marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahocx"/></marker>
+        <marker id="a7m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahom"/></marker>
+      </defs>
+      <rect x="6" y="6" width="456" height="288" rx="10" class="b" style="fill:none"/>
+      <rect x="478" y="6" width="456" height="288" rx="10" class="b" style="fill:none"/>
+      <text x="24" y="32" class="tocx">opencodex · 손님 주머니 (무상태)</text>
+      <text x="496" y="32" class="tom">OmniRoute · 가게 금고 (서버 캐시)</text>
+
+      <rect x="30" y="60" width="140" height="50" rx="8" class="bocx"/><text x="100" y="90" text-anchor="middle" class="tb">opencodex</text>
+      <rect x="290" y="60" width="150" height="50" rx="8" class="b2"/><text x="365" y="82" text-anchor="middle" class="tb">Codex</text><text x="365" y="100" text-anchor="middle" class="tm">Claude Code</text>
+      <rect x="30" y="210" width="140" height="50" rx="8" class="b2"/><text x="100" y="240" text-anchor="middle" class="tb">Anthropic</text>
+      <line x1="172" y1="74" x2="286" y2="74" class="locx" marker-end="url(#a7)"/>
+      <text x="229" y="52" text-anchor="middle" class="tm" style="font-size:10px">ocxr1:{sig,red,nat}</text>
+      <line x1="288" y1="98" x2="174" y2="98" class="locx" marker-end="url(#a7)"/>
+      <text x="229" y="124" text-anchor="middle" class="ts">다음 턴에 그대로 반환</text>
+      <line x1="80" y1="206" x2="80" y2="114" class="lnm" marker-end="url(#a7)"/>
+      <text x="74" y="164" text-anchor="end" class="ts">서명</text>
+      <line x1="120" y1="114" x2="120" y2="206" class="locx" marker-end="url(#a7)"/>
+      <text x="128" y="164" class="ts">서명 붙여 재전송</text>
+      <rect x="250" y="190" width="190" height="70" rx="8" class="b"/>
+      <text x="345" y="214" text-anchor="middle" class="tb">안전장치</text>
+      <text x="345" y="234" text-anchor="middle" class="ts">모델·계정 바뀌면 폐기</text>
+      <text x="345" y="251" text-anchor="middle" class="ts">원본 암호문은 HMAC 태그</text>
+
+      <rect x="502" y="60" width="140" height="50" rx="8" class="bom"/><text x="572" y="90" text-anchor="middle" class="tb">OmniRoute</text>
+      <rect x="762" y="60" width="150" height="50" rx="8" class="b2"/><text x="837" y="90" text-anchor="middle" class="tb">클라이언트</text>
+      <rect x="502" y="210" width="140" height="50" rx="8" class="b"/><text x="572" y="232" text-anchor="middle" class="tb">캐시</text><text x="572" y="250" text-anchor="middle" class="tm">메모리 + SQLite</text>
+      <rect x="762" y="210" width="150" height="50" rx="8" class="b2"/><text x="837" y="232" text-anchor="middle" class="tb">DeepSeek</text><text x="837" y="250" text-anchor="middle" class="tm">Kimi · GLM</text>
+      <line x1="644" y1="85" x2="758" y2="85" class="lnm"/>
+      <text x="701" y="77" text-anchor="middle" class="ts">이력 (생각 생략 가능)</text>
+      <line x1="552" y1="114" x2="552" y2="206" class="lom" marker-end="url(#a7m)"/>
+      <text x="546" y="152" text-anchor="end" class="ts">저장</text>
+      <line x1="592" y1="206" x2="592" y2="114" class="lom" marker-end="url(#a7m)"/>
+      <text x="600" y="152" class="ts">조회</text>
+      <line x1="646" y1="104" x2="760" y2="216" class="lom" marker-end="url(#a7m)"/>
+      <text x="716" y="150" class="ts">다시 끼워 전송</text>
+      <text x="718" y="285" text-anchor="middle" class="tm">키: tool_call_id 또는 sha256(대화)</text>
+    </svg>
+    </div>
+    <figcaption>왼쪽은 서버가 아무것도 기억하지 않아도 됩니다. 오른쪽은 어떤 클라이언트든 되지만, 서버를 여러 대 띄우거나 클라이언트가 기록을 고치면 키가 어긋납니다.</figcaption>
+  </figure>
+  <div class="tw"><table class="wide">
+    <thead><tr><th></th><th class="ocx">주머니 (opencodex)</th><th class="om">금고 (OmniRoute)</th></tr></thead>
+    <tbody>
+      <tr><td class="k">서버 여러 대·재시작</td><td>상태가 없어서 자유로움</td><td>DB 공유가 필요</td></tr>
+      <tr><td class="k">클라이언트가 기록을 편집</td><td>봉투도 같이 사라져 자동으로 일관</td><td>캐시 키가 어긋남</td></tr>
+      <tr><td class="k">적용 범위</td><td><code>encrypted_content</code>나 signature 자리가 있는 클라이언트만</td><td>모든 클라이언트</td></tr>
+      <tr><td class="k">보안</td><td>위조 방지용 HMAC 필요</td><td>캐시 오염과 용량 관리 필요</td></tr>
+    </tbody>
+  </table></div>
+  <details class="deep">
+    <summary>자세히: 봉투 안에 무엇이 들었나 <span class="sub">responses/reasoning-envelope.ts</span></summary>
+    <div class="body">
+      <p><code>encrypted_content = "ocxr1:" + base64(JSON)</code>. JSON 필드는 다음과 같습니다.</p>
+      <div class="tw"><table>
+        <thead><tr><th>필드</th><th>뜻</th></tr></thead>
+        <tbody>
+          <tr><td class="k"><code>sig</code></td><td>Anthropic thinking 서명</td></tr>
+          <tr><td class="k"><code>red</code></td><td>redacted_thinking 블록 데이터 (순서 유지)</td></tr>
+          <tr><td class="k"><code>txt</code></td><td>요약을 숨긴 경우의 thinking 원문. 서명이 이 원문에 걸려 있어서 필요</td></tr>
+          <tr><td class="k"><code>krc</code></td><td>Kiro의 KMS 암호화 reasoning</td></tr>
+          <tr><td class="k"><code>nat</code></td><td>원래 Responses 제공자의 암호문 + 모델 이름 + 경로에 묶인 HMAC 태그. 같은 모델 요청일 때만 복원</td></tr>
+          <tr><td class="k"><code>upd</code></td><td>서명 갱신이 이어진 commentary 메시지 id</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li>Claude Code 쪽도 대칭입니다. 다른 모델의 thinking을 Claude Code에 줄 때 <code>signature</code> 자리에 봉투를 넣습니다. 나중에 진짜 Anthropic으로 갈 때는 허용 목록이 가짜 서명을 버립니다.</li>
+        <li>진짜 OpenAI로 그대로 넘길 때는 <code>ocxr1</code> 봉투를 미리 지웁니다.</li>
+        <li>Codex의 원격 compaction 요청도 같은 원리입니다. 라우팅된 모델로 요약을 만들고 <code>ocx1:</code> + base64(요약)을 compaction 항목으로 돌려준 뒤, 다음 턴에 풀어서 씁니다.</li>
+      </ul>
+      <p><b class="om">OmniRoute</b> 쪽은 <code>services/reasoningCache.ts</code>(DeepSeek·Kimi·GLM·MiMo의 <code>reasoning_content</code> 재전송 요구 대응), <code>geminiThoughtSignatureStore.ts</code>(Gemini 서명), Codex 암호문은 같은 턴을 같은 제공자·계정에 고정(<code>nativeCodexTurnPin.ts</code>)하고 남의 암호문은 sanitizer가 지웁니다. compaction은 vendored <code>codex-chatgpt-web</code>의 읽을 수 있는 요약 형식을 씁니다.</p>
+    </div>
+  </details>
+  <div class="callout">
+    <span class="lab">설계 포인트</span>
+    <p>기본은 <b>봉투 방식</b>. 봉투에 (제공자, 모델, 자격증명) 식별자와 HMAC을 넣고, 대상이 바뀌면 버리세요. <b>서명을 그럴듯한 값으로 지어내지 마세요.</b> 400 오류가 대화 기록에 영원히 남습니다. 서버 캐시는 <code>reasoning_content</code>를 꼭 돌려받아야 하는 DeepSeek 계열에만 보조로 씁니다.</p>
+  </div>
+</section>
+
+<!-- 11 -->
+<section class="chap" id="ending">
+  <div class="head">
+    <span class="num">11</span>
+    <h2>끝맺기와 오류: 첫 글자가 경계선</h2>
+  </div>
+  <p class="easy">답이 <b>한 글자도 안 나갔으면</b> 다른 계정·모델로 다시 시도해도 됩니다. <b>한 글자라도 나갔으면</b> 다시 시도하면 안 됩니다. 사용자가 같은 말을 두 번 보게 됩니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 820 180" role="img" aria-label="재전송 게이트. 첫 출력 바이트 이전은 재시도와 폴백이 허용되고, 이후는 금지되어 incomplete나 failed로 끝낸다.">
+      <rect x="30" y="40" width="300" height="90" class="bok"/>
+      <rect x="330" y="40" width="460" height="90" class="brisk"/>
+      <text x="180" y="64" text-anchor="middle" class="tok">재시도 · 폴백 허용</text>
+      <text x="560" y="64" text-anchor="middle" class="trisk">재시도 금지 → incomplete / failed 로 종료</text>
+      <line x1="30" y1="100" x2="790" y2="100" class="ln"/>
+      <line x1="330" y1="30" x2="330" y2="140" class="ln" style="stroke-width:2.5"/>
+      <circle cx="70" cy="100" r="5" class="ah"/><circle cx="190" cy="100" r="5" class="ah"/><circle cx="330" cy="100" r="6" class="ah"/><circle cx="600" cy="100" r="5" class="ah"/>
+      <text x="70" y="160" text-anchor="middle" class="ts">요청 전송</text>
+      <text x="190" y="160" text-anchor="middle" class="ts">429 → 다른 계정</text>
+      <text x="330" y="160" text-anchor="middle" class="tb">첫 출력 바이트</text>
+      <text x="600" y="160" text-anchor="middle" class="ts">업스트림 끊김</text>
+    </svg>
+    </div>
+    <figcaption>opencodex는 이 경계를 한 곳(<code>lib/request-resend-gate.ts</code>)에서 관리합니다. 종료 이벤트 없이 스트림이 끝나면 "성공"이 아니라 <code>response.incomplete(adapter_eof)</code>로 닫습니다.</figcaption>
+  </figure>
+  <details class="deep">
+    <summary>자세히: 종료 처리 비교</summary>
+    <div class="body">
+      <ul>
+        <li><b class="ocx">opencodex</b>: Chat 업스트림이 <code>[DONE]</code>도 <code>finish_reason</code>도 없이 끊기면 "잘렸을 수 있음" 오류(<code>openai-chat.ts:658</code>). 거부(refusal)는 <code>response.failed</code>로, 할당량 초과 등은 <code>retryable</code> 표시. 이미 발행된 tool call은 실패 전에 <code>completed</code>로 닫아 클라이언트가 호출을 잃지 않게 합니다.</li>
+        <li><b class="ocx">opencodex</b>의 Anthropic 출력은 <code>message_start → (블록 시작·델타·종료)* → message_delta → message_stop</code> 순서를 고정하고, <code>message_delta.usage</code>는 누적값입니다.</li>
+        <li><b class="om">OmniRoute</b>: 초기 keepalive 프레임, 스트림 복구(<code>services/streamRecovery.ts</code>)가 있습니다. finish_reason은 <code>computeFinishReason(state)</code>가 플래그로 추론합니다(tool call이 있었으면 <code>tool_calls</code>, 잘렸으면 <code>length</code>).</li>
+      </ul>
+    </div>
+  </details>
+  <div class="callout">
+    <span class="lab">설계 포인트</span>
+    <p>종료 이벤트는 <code>done | incomplete | error</code> 셋만 두고, 그 밖의 스트림 종료는 전부 incomplete로 처리하세요. "첫 출력 전/후" 경계는 타입이나 게이트 하나로 표현하세요.</p>
+  </div>
+</section>
+
+<!-- 12 -->
+<section class="chap" id="compress">
+  <div class="head">
+    <span class="num">12</span>
+    <h2>OmniRoute의 압축 엔진</h2>
+  </div>
+  <p class="easy">프롬프트를 줄여 토큰을 아끼는 기능입니다. 홍보는 "15~95% 절약"이지만 <b>기본값은 꺼져 있고</b>, 핵심은 정규식으로 단어를 지우는 방식입니다.</p>
+  <div class="pair">
+    <div class="card">
+      <h3>Caveman <span class="chip lo">사람 말 줄이기</span></h3>
+      <p>user/system 문장에서 인사말, "please" 같은 공손 표현, 완충어, <b>관사(a/an/the)</b>, "I want to" 같은 구절을 정규식으로 지웁니다. 코드 블록은 보호합니다. 답변을 짧게 하라는 지시를 system에 넣는 출력 스타일도 있습니다.</p>
+      <p class="muted" style="font-size:.88rem"><code>compression/caveman.ts</code>, <code>cavemanRules.ts</code></p>
+    </div>
+    <div class="card">
+      <h3>RTK <span class="chip lo">셸 출력 줄이기</span></h3>
+      <p>도구 실행 결과에만 적용됩니다. eslint·tsc·vite·curl 등 명령별 필터 55개로 줄 필터링, 중복 제거, 비슷한 줄 묶기, 잘라내기를 합니다. Anthropic 프롬프트 캐시를 깨지 않도록 <code>cache_control</code> 블록은 건너뜁니다.</p>
+      <p class="muted" style="font-size:.88rem"><code>compression/engines/rtk/</code></p>
+    </div>
+  </div>
+  <details class="deep">
+    <summary>자세히: 나머지 엔진과 주의점</summary>
+    <div class="body">
+      <ul>
+        <li>기본값: <code>compression/types.ts:423</code> <code>defaultMode: "off"</code>. 설정이나 콤보에서 켜야 합니다. 단, 컨텍스트가 한도의 70%를 넘으면 별도의 반응형 압축이 동작합니다.</li>
+        <li>기타 엔진: Session-Dedup(턴 사이 중복), CCR(큰 블록을 보관하고 필요할 때 꺼냄), Headroom(JSON 배열 표 형식 압축), Relevance(마지막 질문과의 관련도), Aggressive(요약 + 오래된 턴 노화), LLMLingua-2(ONNX), Ultra, OmniGlyph(컨텍스트를 이미지로, 실험).</li>
+        <li>README의 "같은 답, 정확도 손실 0" 예시는 검증된 수치가 아닌 홍보 문구로 봐야 합니다. 관사와 공손 표현을 지우는 건 의미가 바뀔 수 있는 손실 압축입니다.</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<!-- 13 -->
+<section class="chap" id="risk">
+  <div class="head">
+    <span class="num">13</span>
+    <h2>보안과 약관: 빨간불</h2>
+  </div>
+  <p class="easy">두 프로젝트 모두 구독 계정을 쓸 때 <b>공식 프로그램인 척</b>합니다. 일부 코드는 주석에 "탐지를 피하려고"라고 직접 적혀 있습니다. API 키 제공자만 쓰는 것이 안전한 범위입니다.</p>
+  <div class="tw"><table class="wide">
+    <thead><tr><th>항목</th><th>심각도</th><th class="om">OmniRoute</th><th class="ocx">opencodex</th></tr></thead>
+    <tbody>
+      <tr><td class="k">Claude Code 위장</td><td><span class="chip hi">높음</span></td><td>Claude 구독 토큰(<code>sk-ant-oat</code>)이면 어떤 클라이언트든 Claude Code 시스템 문구·billing 헤더·CLI 헤더 주입. 계정마다 device_id 합성, 주석: 계정들이 "correlate"되는 것을 막기 위해 (<code>executors/base.ts:1180~</code>)</td><td>Claude Code CLI 헤더 사칭(<code>X-App: cli</code>, Stainless 0.74.0), 주석: "non-first-party signature"를 피하려고 (<code>adapters/client-fingerprint.ts</code>)</td></tr>
+      <tr><td class="k">탐지 회피</td><td><span class="chip hi">높음</span></td><td>"opencode·cline·cursor" 같은 단어에 zero-width joiner 삽입, 주석: "prevent detection" (<code>claudeCodeObfuscation.ts</code>). mitmproxy로 캡처한 헤더·필드 순서를 "실제 CLI와 구별 불가"하게 재현 (<code>cliFingerprints.ts</code>)</td><td>ChatGPT 앱 서버 응답에서 <code>rate_limit_reached</code> 게이트 제거 (<code>gate-rewrite.ts:unlockRateLimitGate</code>)</td></tr>
+      <tr><td class="k">웹 세션을 API처럼</td><td><span class="chip hi">높음</span></td><td>웹 쿠키 제공자 35개 이상, TLS 지문 위장(wreq-js), headless Playwright로 Cloudflare Turnstile 풀이, 무료 공개 프록시 목록 수집</td><td>선택 옵션으로 TLS 프로필(<code>antigravity-browser</code>)</td></tr>
+      <tr><td class="k">시스템 수준 가로채기</td><td><span class="chip mid">중간</span></td><td>루트 CA 설치 + hosts 파일 수정(관리자 권한). 과거엔 원격에서 호출 가능했던 권고 이력(GHSA-x7vm-hp44-9p79)</td><td>로컬 CA로 <code>api.anthropic.com</code>·<code>claude.ai</code> 가로채기, <code>~/.claude/settings.json</code> 수정. 바이너리 패치는 안 함</td></tr>
+      <tr><td class="k">기본 인증</td><td><span class="chip mid">중간</span></td><td><code>REQUIRE_API_KEY</code> 기본 <code>false</code> → <code>/v1</code> 익명 허용. 잘못된 키도 익명으로 강등. <span class="chip i">추정</span> 네트워크에 노출하면 공개 릴레이가 될 수 있음</td><td>루프백에서는 토큰을 아예 읽지 않음. 외부 바인딩 시 토큰 필수. <span class="chip i">추정</span> 같은 PC의 다른 프로그램이 구독을 쓸 수 있음</td></tr>
+      <tr><td class="k">비밀 저장</td><td><span class="chip mid">중간</span></td><td>키가 없으면 평문, 자동 생성 키는 DB 옆 <code>.env</code></td><td>API 키 기본 평문(0600 권한), 키체인은 선택</td></tr>
+      <tr><td class="k">텔레메트리</td><td><span class="chip lo">낮음</span></td><td>분석 SDK 없음. 가격표·모델 목록·프록시 목록 등 외부 조회는 많음</td><td>분석 SDK 없음. 에이전트가 CLI를 돌리면 사용자에게 "스타 눌러 달라"고 묻게 하는 문구 출력</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout risk">
+    <span class="lab">결론</span>
+    <p>Claude Pro/Max, ChatGPT, Copilot 구독을 서드파티 경로로 쓰면서 공식 클라이언트로 위장하고 여러 계정을 돌리는 것은 각 사 약관과 정면으로 부딪힐 가능성이 큽니다. OmniRoute 자신도 UI 문구에 "프록시·라우터 사용은 허가되지 않았고 계정이 정지될 수 있다"고 적어 두었고, opencodex README도 Anthropic이 계정을 정지할 수 있다고 경고합니다.</p>
+  </div>
+</section>
+
+<!-- 14 -->
+<section class="chap" id="build">
+  <div class="head">
+    <span class="num">14</span>
+    <h2>직접 라우터를 만든다면</h2>
+  </div>
+  <p class="easy">opencodex의 뼈대를 가져오되 <b>더 작게</b>. 들어오는 통역사 N명, 나가는 통역사 M명, 가운데 공통 언어 하나. 그러면 통역 규칙은 N×M개가 아니라 <b>N+M개</b>면 됩니다.</p>
+  <figure class="fig">
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 940 330" role="img" aria-label="권장 구조. 요청은 디코더 세 개에서 타입 IR로, 라우터를 거쳐 어댑터 M개로 간다. 응답은 어댑터의 parseStream이 이벤트 스트림을 만들고 인코더 세 개가 클라이언트 형식으로 바꾼다.">
+      <defs>
+        <marker id="a8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+      </defs>
+      <text x="20" y="26" class="ts">요청</text>
+      <rect x="20" y="38" width="170" height="96" rx="10" class="b2"/>
+      <text x="105" y="70" text-anchor="middle" class="tb">디코더 3개</text>
+      <text x="105" y="92" text-anchor="middle" class="tm">Responses</text>
+      <text x="105" y="108" text-anchor="middle" class="tm">Anthropic · Chat</text>
+      <rect x="230" y="54" width="170" height="64" rx="10" class="bocx"/>
+      <text x="315" y="80" text-anchor="middle" class="tb">타입 IR</text>
+      <text x="315" y="100" text-anchor="middle" class="tm">ParsedRequest</text>
+      <rect x="440" y="54" width="150" height="64" rx="10" class="b"/>
+      <text x="515" y="80" text-anchor="middle" class="tb">라우터</text>
+      <text x="515" y="100" text-anchor="middle" class="tm">폴백 · 계정 선택</text>
+      <rect x="630" y="38" width="290" height="96" rx="10" class="b2"/>
+      <text x="775" y="66" text-anchor="middle" class="tb">어댑터 M개 · buildRequest</text>
+      <text x="775" y="88" text-anchor="middle" class="tm">openai-chat · anthropic · gemini …</text>
+      <text x="775" y="108" text-anchor="middle" class="ts">대화 모양 규칙은 여기서 마지막에</text>
+      <line x1="192" y1="86" x2="226" y2="86" class="ln" marker-end="url(#a8)"/>
+      <line x1="402" y1="86" x2="436" y2="86" class="ln" marker-end="url(#a8)"/>
+      <line x1="592" y1="86" x2="626" y2="86" class="ln" marker-end="url(#a8)"/>
+
+      <line x1="775" y1="136" x2="775" y2="192" class="ln" marker-end="url(#a8)"/>
+      <text x="785" y="168" class="ts">업스트림 왕복</text>
+
+      <text x="20" y="182" class="ts">응답</text>
+      <rect x="630" y="196" width="290" height="70" rx="10" class="b2"/>
+      <text x="775" y="222" text-anchor="middle" class="tb">어댑터 · parseStream</text>
+      <text x="775" y="244" text-anchor="middle" class="ts">병렬 tool call 줄 세우기 · &lt;think&gt; 분리</text>
+      <rect x="440" y="199" width="150" height="64" rx="10" class="bocx"/>
+      <text x="515" y="225" text-anchor="middle" class="tb">이벤트 스트림</text>
+      <text x="515" y="245" text-anchor="middle" class="tm">done|incomplete|error</text>
+      <rect x="230" y="199" width="170" height="64" rx="10" class="b"/>
+      <text x="315" y="225" text-anchor="middle" class="tb">인코더 3개</text>
+      <text x="315" y="245" text-anchor="middle" class="ts">열린 항목 하나 상태기계</text>
+      <rect x="20" y="199" width="170" height="64" rx="10" class="b2"/>
+      <text x="105" y="236" text-anchor="middle" class="tb">클라이언트</text>
+      <line x1="628" y1="231" x2="594" y2="231" class="ln" marker-end="url(#a8)"/>
+      <line x1="438" y1="231" x2="404" y2="231" class="ln" marker-end="url(#a8)"/>
+      <line x1="228" y1="231" x2="194" y2="231" class="ln" marker-end="url(#a8)"/>
+      <text x="470" y="310" text-anchor="middle" class="ts">번역 규칙 수: N×M 대신 N+M · 클라이언트 형식 3 + 제공자 M</text>
+    </svg>
+    </div>
+    <figcaption>위 줄은 요청, 아래 줄은 응답입니다. 형식이 바뀌는 곳은 디코더·어댑터·인코더 세 군데뿐이고, 가운데는 늘 같은 타입입니다.</figcaption>
+  </figure>
+
+  <ol class="steps">
+    <li><div><h3>IR은 타입으로, 작게</h3><p>opencodex 구조(역할 4개, 파트 3종)를 가져오되 제공자별 상태는 <code>providerState</code> 하나로 모으세요. <code>_</code> 필드가 50개로 불어나지 않게.</p></div></li>
+    <li><div><h3>응답은 이벤트 합 타입</h3><p><code>text_delta(phase?)</code>, <code>thinking_delta</code>, <code>thinking_signature</code>, <code>redacted</code>, <code>tool_call_start/delta/end</code>, <code>heartbeat</code>, 그리고 종료 셋 <code>done | incomplete | error</code>.</p></div></li>
+    <li><div><h3>어댑터가 지저분한 일을 전담</h3><p>병렬 tool call 직렬화, <code>&lt;think&gt;</code> 분리, 텍스트로 쓴 tool call 복구, 대화 모양 규칙. 전부 해당 제공자 어댑터 안에서.</p></div></li>
+    <li><div><h3>인코더는 열린 항목 하나</h3><p>phase는 다음 이벤트를 보고 사후 분류, 서명은 다음 이벤트까지 보류, tool call 인자는 검증 후 완료.</p></div></li>
+    <li><div><h3>reasoning은 HMAC 봉투</h3><p>대상(제공자·모델·자격증명)이 바뀌면 폐기. 서버 캐시는 DeepSeek 계열 보조용으로만.</p></div></li>
+    <li><div><h3>첫 출력 게이트</h3><p>재시도·폴백은 첫 바이트 전까지만. 이 규칙을 한 곳에서.</p></div></li>
+    <li><div><h3>바이트 예산</h3><p>opencodex의 <code>TranslatorBudget</code>처럼 버퍼·봉투·누적기에 상한을. 긴 세션 프록시에서 메모리 누수는 실제 문제입니다.</p></div></li>
+    <li><div><h3>녹화·재생 골든 테스트</h3><p>실제 업스트림 SSE를 저장해 두고 재생해서 비교하세요. 두 프로젝트의 이슈 번호 붙은 회귀 테스트 수천 개 대부분이 이 방식으로 미리 잡을 수 있는 버그였습니다.</p></div></li>
+  </ol>
+
+  <details class="deep">
+    <summary>자세히: 최소 타입 스케치 <span class="sub">TypeScript</span></summary>
+    <div class="body">
+<pre><code>// 요청 IR
+type Part =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string; signature?: Envelope; redacted?: string[] }
+  | { type: "toolCall"; id: string; name: string; args: unknown };
+
+type Message =
+  | { role: "user" | "developer"; content: string | ContentPart[] }
+  | { role: "assistant"; content: Part[] }
+  | { role: "toolResult"; callId: string; content: string | ContentPart[]; isError: boolean };
+
+interface ParsedRequest {
+  model: string;
+  system: string[];
+  messages: Message[];
+  tools: Tool[];
+  options: { maxOutput?: number; effort?: string; toolChoice?: ToolChoice };
+  providerState?: Record&lt;string, unknown&gt;;   // 제공자별 상태는 여기 한 곳만
+}
+
+// 응답 이벤트
+type Event =
+  | { type: "heartbeat" }
+  | { type: "text_delta"; text: string; phase?: "commentary" | "final_answer" }
+  | { type: "thinking_delta"; text: string }
+  | { type: "thinking_signature"; signature: string }
+  | { type: "redacted"; data: string }
+  | { type: "tool_call_start"; id: string; name: string }   // 어댑터가 한 줄로 세워서 보냄
+  | { type: "tool_call_delta"; args: string }
+  | { type: "tool_call_end" }
+  | { type: "done"; usage?: Usage; stopReason?: string }
+  | { type: "incomplete"; reason: string; usage?: Usage }
+  | { type: "error"; message: string; status?: number; retryable?: boolean };
+
+interface Adapter {
+  buildRequest(req: ParsedRequest): { url: string; headers: Record&lt;string, string&gt;; body: string };
+  parseStream(res: Response): AsyncGenerator&lt;Event&gt;;
+}
+
+// 봉투: 대상이 바뀌면 검증 실패 → 폐기
+interface Envelope { v: 1; provider: string; model: string; cred: string; sig?: string; red?: string[]; mac: string }</code></pre>
+    </div>
+  </details>
+
+  <h3 style="margin-top:6px">피해야 할 것</h3>
+  <div class="donts">
+    <div><b>Chat JSON 허브</b>빠진 정보를 밑줄 플래그로 끼워 넘기게 됩니다.</div>
+    <div><b>공유 state 객체</b>두 번역 단계가 하나를 같이 쓰면 엣지 케이스가 끝없이 생깁니다.</div>
+    <div><b>가짜 서명·암호문</b>400 오류가 대화 기록에 영구히 남습니다.</div>
+    <div><b>출력 후 재시도</b>사용자가 같은 텍스트를 두 번 봅니다.</div>
+    <div><b>공통 단계 정규화</b>메시지 순서를 바꾸면 뒤 단계가 틀린 위치를 물려받습니다.</div>
+    <div><b>구독 위장</b>기술 문제가 아니라 계정 정지 문제입니다. API 키 경로로 설계하세요.</div>
+  </div>
+</section>
+
+<!-- 15 -->
+<section class="chap" id="files">
+  <div class="head">
+    <span class="num">15</span>
+    <h2>코드 지도: 어디부터 읽을까</h2>
+  </div>
+  <p class="easy">직접 열어볼 때 이 순서로 읽으면 구조가 빨리 잡힙니다.</p>
+  <div class="pair">
+    <div class="card om">
+      <h3><span class="who">OmniRoute</span></h3>
+      <div class="tw"><table>
+        <tbody>
+          <tr><td class="k">입구</td><td><code>src/sse/handlers/chat.ts</code></td></tr>
+          <tr><td class="k">핵심 실행</td><td><code>open-sse/handlers/chatCore.ts</code></td></tr>
+          <tr><td class="k">번역 허브</td><td><code>open-sse/translator/index.ts</code>, <code>registry.ts</code></td></tr>
+          <tr><td class="k">Claude ↔ Chat</td><td><code>translator/response/claude-to-openai.ts</code>, <code>request/openai-to-claude.ts</code></td></tr>
+          <tr><td class="k">Responses 출력</td><td><code>translator/response/openai-responses.ts</code></td></tr>
+          <tr><td class="k">스트림</td><td><code>open-sse/utils/stream.ts</code></td></tr>
+          <tr><td class="k">업스트림</td><td><code>open-sse/executors/base.ts</code></td></tr>
+          <tr><td class="k">콤보</td><td><code>open-sse/services/combo/strategyRegistry.ts</code></td></tr>
+          <tr><td class="k">계정 실패 분류</td><td><code>open-sse/services/accountFallback.ts</code></td></tr>
+          <tr><td class="k">reasoning 캐시</td><td><code>open-sse/services/reasoningCache.ts</code></td></tr>
+          <tr><td class="k">압축</td><td><code>open-sse/services/compression/</code></td></tr>
+          <tr><td class="k">MITM</td><td><code>src/mitm/server.cjs</code>, <code>cert/install.ts</code></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+    <div class="card ocx">
+      <h3><span class="who">opencodex</span></h3>
+      <div class="tw"><table>
+        <tbody>
+          <tr><td class="k">IR 타입</td><td><code>src/types/request.ts</code></td></tr>
+          <tr><td class="k">어댑터 계약</td><td><code>src/adapters/base.ts</code>, <code>registry.ts</code></td></tr>
+          <tr><td class="k">입력 파서</td><td><code>src/responses/parser.ts</code></td></tr>
+          <tr><td class="k">라우터</td><td><code>src/router.ts</code></td></tr>
+          <tr><td class="k">Chat 어댑터</td><td><code>src/adapters/openai-chat.ts</code></td></tr>
+          <tr><td class="k">Anthropic 어댑터</td><td><code>src/adapters/anthropic.ts</code></td></tr>
+          <tr><td class="k">출력 인코더</td><td><code>src/bridge/sse.ts</code></td></tr>
+          <tr><td class="k">reasoning 봉투</td><td><code>src/responses/reasoning-envelope.ts</code></td></tr>
+          <tr><td class="k">Claude Code 경로</td><td><code>src/claude/inbound.ts</code>, <code>outbound.ts</code></td></tr>
+          <tr><td class="k">폴백 정책</td><td><code>src/routing/fallback-policy.ts</code></td></tr>
+          <tr><td class="k">재전송 게이트</td><td><code>src/lib/request-resend-gate.ts</code></td></tr>
+          <tr><td class="k">설계 문서</td><td><code>structure/INDEX.md</code></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p><b>조사 방법</b>: 2026-10-23에 두 저장소를 얕게 클론(OmniRoute <code>release/v3.8.53</code> @ <code>2319a84a</code>, opencodex <code>main</code> @ <code>83ec4f75</code>)해 코드를 직접 읽었습니다. 스타·포크·기여자 수는 같은 날 GitHub API 값입니다. 줄 수는 테스트를 뺀 TS/JS 기준 근사치입니다.</p>
+  <p>보안·약관 항목의 인용 주석과 기본값(<code>REQUIRE_API_KEY</code>, <code>defaultMode</code>, zero-width joiner, mitmproxy 지문, 키체인 토큰 수집, rate-limit 게이트 제거, 루프백 무인증)은 해당 파일을 다시 검색해 원문을 확인했습니다. <span class="chip i">추정</span> 표시는 코드가 아니라 정황에 근거한 판단입니다.</p>
+  <p>두 프로젝트 모두 하루에도 수십 커밋이 들어가므로, 파일 경로와 줄 번호는 위 커밋 기준입니다.</p>
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var btn = document.getElementById("toggleAll");
+  var all = function () { return Array.prototype.slice.call(document.querySelectorAll("details.deep")); };
+  function sync() {
+    var open = all().every(function (d) { return d.open; });
+    btn.textContent = open ? "자세히 모두 접기" : "자세히 모두 펼치기";
+    btn.setAttribute("aria-pressed", open ? "true" : "false");
+  }
+  btn.addEventListener("click", function () {
+    var open = !all().every(function (d) { return d.open; });
+    all().forEach(function (d) { d.open = open; });
+    sync();
+  });
+  all().forEach(function (d) { d.addEventListener("toggle", sync); });
+  sync();
+})();
+</script>
+
+</body>
+</html>
