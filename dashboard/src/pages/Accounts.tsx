@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw } from 'lucide-react'
+import SubscriptionOnboarding from './SubscriptionOnboarding'
 
-const API_BASE = '/api'
+const API_BASE = 'http://localhost:20101'
 
 interface Account {
   id: string
@@ -121,6 +122,7 @@ export default function Accounts({ adminKey, onUpdate }: { adminKey: string; onU
         </button>
       </div>
 
+      <SubscriptionOnboarding adminKey={adminKey} onUpdate={() => { fetchAccounts(); onUpdate() }} />
       <div className="table-container">
         <div className="table-header">
           <h2>업스트림 계정 ({accounts.length})</h2>

@@ -2,76 +2,116 @@
  * 업스트림 계정 Repository
  */
 import { getDb } from '../client.js';
-import type { UpstreamAccount } from '../schema.js';
-import { randomUUID } from 'crypto';
+import type { UpstreamAccount, AccountMeta, QuotaInfo, CredentialType } from '../schema.js';
+import { createHash, randomUUID } from 'crypto';
+import { parseStoredCredentials } from '../../upstream/oauth.js';
 import { CredentialVault } from '../../utils/encryption.js';
 
 const vault = new CredentialVault();
+const refreshFingerprint = (provider: string, token: string) => createHash('sha256').update(JSON.stringify([provider, token])).digest('hex');
+
+function parseJson<T>(text: string | null | undefined, fallback: T): T {
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export class RefreshIntentError extends Error {
+  constructor() { super('Refresh outcome uncertain or token already used; reauthentication required'); }
+}
 
 export class AccountRepository {
-  /**
-   * ID로 계정 조회
-   */
-  findById(id: string): UpstreamAccount | null {
+  /** Reserve this provider/token forever before sending it to the provider. */
+  claimRefresh(id: string, expected: string): { account: UpstreamAccount; credentialVersion: string; attemptId: string; fingerprint: string } {
     const db = getDb();
-    const row = db.prepare('SELECT * FROM upstream_accounts WHERE id = ?').get(id);
-    
-    if (!row) return null;
-    
-    return this.rowToAccount(row);
+    return db.transaction(() => {
+      const account = this.findById(id);
+      if (!account || account.credentialType !== 'oauth' || account.credentials !== expected || !['active', 'quota_exceeded'].includes(account.status))
+        throw new Error('Account unavailable for refresh');
+      const token = parseStoredCredentials(account.credentials)?.refreshToken;
+      if (!token) throw new Error('Account has no refresh token');
+      const fingerprint = refreshFingerprint(account.provider, token);
+      const attemptId = randomUUID();
+      const result = db.prepare('INSERT OR IGNORE INTO oauth_refresh_intents (token_fingerprint, attempt_id, account_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(fingerprint, attemptId, id, new Date().toISOString());
+      if (!result.changes) throw new RefreshIntentError();
+      const row = db.prepare('SELECT credentials FROM upstream_accounts WHERE id = ?').get(id) as { credentials: string };
+      return { account, credentialVersion: row.credentials, attemptId, fingerprint };
+    }).immediate();
+  }
+
+  finishRefresh(id: string, credentialVersion: string, credentialRevision: number, fingerprint: string, attemptId: string, credentials: string, meta: AccountMeta): UpstreamAccount | null {
+    const db = getDb();
+    return db.transaction(() => {
+      const intent = db.prepare('SELECT 1 FROM oauth_refresh_intents WHERE token_fingerprint = ? AND attempt_id = ? AND account_id = ?').get(fingerprint, attemptId, id);
+      const current = this.findById(id);
+      const row = db.prepare('SELECT credentials FROM upstream_accounts WHERE id = ?').get(id) as { credentials: string } | undefined;
+      if (!intent || !current || current.credentialType !== 'oauth' || current.credentialRevision !== credentialRevision || row?.credentials !== credentialVersion) throw new Error('Account credentials changed during refresh');
+      db.prepare('UPDATE upstream_accounts SET credentials = ?, meta = ?, updated_at = ?, state_revision = state_revision + 1, last_refresh_revision = credential_revision + 1 WHERE id = ?')
+        .run(vault.encrypt(credentials), JSON.stringify({ ...current.meta, ...meta }), new Date().toISOString(), id);
+      return current.status === 'active' || current.status === 'quota_exceeded' ? this.findById(id) : null;
+    }).immediate();
+  }
+  hasRefreshIntent(provider: string, token: string): boolean {
+    return !!getDb().prepare('SELECT 1 FROM oauth_refresh_intents WHERE token_fingerprint = ?').get(refreshFingerprint(provider, token));
+  }
+  markRefreshError(id: string, credentialVersion: string, observed: UpstreamAccount): void {
+    getDb().prepare(`UPDATE upstream_accounts SET status = 'error', last_error = ?, updated_at = ?, request_revision = request_revision + 1
+      WHERE id = ? AND credential_type = 'oauth' AND credentials = ? AND state_revision = ? AND status IN ('active', 'quota_exceeded')`)
+      .run('재로그인 필요: 토큰 갱신 결과 불확정', new Date().toISOString(), id, credentialVersion, observed.stateRevision);
+  }
+  findById(id: string): UpstreamAccount | null {
+    const row = getDb().prepare('SELECT * FROM upstream_accounts WHERE id = ?').get(id);
+    return row ? this.rowToAccount(row) : null;
   }
 
   /**
-   * 제공자별 활성 계정 조회
+   * 라우팅 후보 (active + quota_exceeded). error/disabled 는 제외.
    */
   findActiveByProvider(provider: string): UpstreamAccount[] {
-    const db = getDb();
-    const rows = db
+    const rows = getDb()
       .prepare(`
-        SELECT * FROM upstream_accounts 
+        SELECT * FROM upstream_accounts
         WHERE provider = ? AND status IN ('active', 'quota_exceeded')
         ORDER BY priority ASC, name ASC
       `)
       .all(provider);
-    
     return rows.map(row => this.rowToAccount(row));
   }
 
-  /**
-   * 계정 생성
-   */
   create(data: {
     name: string;
     provider: 'anthropic' | 'openai' | 'google';
-    credentialType: 'cookie' | 'api_key' | 'session_token';
+    credentialType: CredentialType;
     credentials: string;
+    meta?: AccountMeta;
     dailyQuota?: number;
     priority?: number;
     weight?: number;
   }): UpstreamAccount {
-    const db = getDb();
     const id = randomUUID();
     const now = new Date().toISOString();
     const tomorrow = new Date();
     tomorrow.setHours(24, 0, 0, 0);
 
-    // 자격증명 암호화
-    const encryptedCreds = vault.encrypt(data.credentials);
-
-    db.prepare(`
+    getDb().prepare(`
       INSERT INTO upstream_accounts (
-        id, name, provider, credential_type, credentials,
+        id, name, provider, credential_type, credentials, meta, quota_info,
         status, last_used, last_error,
         daily_quota, used_today, quota_reset_at,
         priority, weight,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'active', NULL, NULL, ?, 0, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'active', NULL, NULL, ?, 0, ?, ?, ?, ?, ?)
     `).run(
       id,
       data.name,
       data.provider,
       data.credentialType,
-      encryptedCreds,
+      vault.encrypt(data.credentials),
+      JSON.stringify(data.meta ?? {}),
       data.dailyQuota ?? 0,
       tomorrow.toISOString(),
       data.priority ?? 0,
@@ -83,141 +123,145 @@ export class AccountRepository {
     return this.findById(id)!;
   }
 
-  /**
-   * 계정 업데이트
-   */
   update(
     id: string,
     data: Partial<
       Pick<
         UpstreamAccount,
-        'name' | 'status' | 'lastError' | 'dailyQuota' | 'priority' | 'weight' | 'credentials'
+        'name' | 'status' | 'lastError' | 'dailyQuota' | 'priority' | 'weight' | 'credentials' | 'credentialType' | 'meta'
       >
     >
   ): void {
-    const db = getDb();
     const updates: string[] = [];
     const values: any[] = [];
+    const set = (col: string, v: any) => {
+      updates.push(`${col} = ?`);
+      values.push(v);
+    };
 
-    if (data.name !== undefined) {
-      updates.push('name = ?');
-      values.push(data.name);
-    }
-    if (data.status !== undefined) {
-      updates.push('status = ?');
-      values.push(data.status);
-    }
-    if (data.lastError !== undefined) {
-      updates.push('last_error = ?');
-      values.push(data.lastError);
-    }
-    if (data.dailyQuota !== undefined) {
-      updates.push('daily_quota = ?');
-      values.push(data.dailyQuota);
-    }
-    if (data.priority !== undefined) {
-      updates.push('priority = ?');
-      values.push(data.priority);
-    }
-    if (data.weight !== undefined) {
-      updates.push('weight = ?');
-      values.push(data.weight);
-    }
-    if (data.credentials !== undefined) {
-      updates.push('credentials = ?');
-      values.push(vault.encrypt(data.credentials));
-    }
+    if (data.name !== undefined) set('name', data.name);
+    if (data.status !== undefined) set('status', data.status);
+    if (data.lastError !== undefined) set('last_error', data.lastError);
+    if (data.dailyQuota !== undefined) set('daily_quota', data.dailyQuota);
+    if (data.priority !== undefined) set('priority', data.priority);
+    if (data.weight !== undefined) set('weight', data.weight);
+    if (data.credentialType !== undefined) set('credential_type', data.credentialType);
+    if (data.credentials !== undefined && data.credentials !== '') set('credentials', vault.encrypt(data.credentials));
+    // Administrative credential replacement is a new generation even if the
+    // access token is identical; internal refresh writes do not use update().
+    if (data.credentialType !== undefined || (data.credentials !== undefined && data.credentials !== '')) updates.push('state_revision = state_revision + 1');
+    if (data.meta !== undefined) set('meta', JSON.stringify(data.meta));
 
     if (updates.length === 0) return;
-
-    updates.push('updated_at = ?');
-    values.push(new Date().toISOString());
+    set('updated_at', new Date().toISOString());
     values.push(id);
-
-    db.prepare(`UPDATE upstream_accounts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    getDb().prepare(`UPDATE upstream_accounts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   }
 
-  /**
-   * 마지막 사용 시각 업데이트
-   */
-  markUsed(id: string): void {
+  /** Atomically compare the observed credential and preserve current metadata. */
+  saveCredentialsIfUnchanged(id: string, expected: string, credentials: string, meta: AccountMeta): boolean {
     const db = getDb();
-    db.prepare(`
-      UPDATE upstream_accounts 
-      SET last_used = ?, used_today = used_today + 1, updated_at = ?
-      WHERE id = ?
-    `).run(new Date().toISOString(), new Date().toISOString(), id);
+    return db.transaction(() => {
+      const current = this.findById(id);
+      if (!current || current.credentialType !== 'oauth' || current.credentials !== expected) return false;
+      db.prepare('UPDATE upstream_accounts SET credentials = ?, meta = ?, updated_at = ? WHERE id = ?')
+        .run(vault.encrypt(credentials), JSON.stringify({ ...current.meta, ...meta }), new Date().toISOString(), id);
+      return true;
+    }).immediate();
   }
 
-  /**
-   * 할당량 초과 표시
-   */
-  markQuotaExceeded(id: string): void {
+  markErrorIfCredentialsUnchanged(id: string, expected: string, error: string): void {
     const db = getDb();
-    db.prepare(`
-      UPDATE upstream_accounts 
-      SET status = 'quota_exceeded', last_error = 'Daily quota exceeded', updated_at = ?
-      WHERE id = ?
-    `).run(new Date().toISOString(), id);
+    db.transaction(() => {
+      const current = this.findById(id);
+      if (current?.credentialType === 'oauth' && current.credentials === expected && current.status !== 'disabled') this.markError(id, error);
+    }).immediate();
   }
 
-  /**
-   * 오류 표시
-   */
+  saveQuotaInfo(id: string, info: QuotaInfo): void {
+    getDb()
+      .prepare('UPDATE upstream_accounts SET quota_info = ? WHERE id = ?')
+      .run(JSON.stringify(info), id);
+  }
+
+  /** 성공 사용 기록. quota_exceeded 상태였다면 active 로 복귀 */
+  markUsed(id: string, observed?: UpstreamAccount, usedToken?: string, countUsage = true): boolean {
+    const now = new Date().toISOString();
+    const db = getDb();
+    return db.transaction(() => {
+      const current = this.findById(id);
+      if (countUsage && current) db.prepare('UPDATE upstream_accounts SET last_used = ?, used_today = used_today + 1, updated_at = ? WHERE id = ?').run(now, now, id);
+      if (!current || !['active', 'quota_exceeded'].includes(current.status) || (observed && (current.stateRevision !== observed.stateRevision || (usedToken === undefined ? current.credentials !== observed.credentials : (parseStoredCredentials(current.credentials)?.accessToken ?? current.credentials) !== usedToken)))) return false;
+      if (current.status === 'quota_exceeded') db.prepare("UPDATE upstream_accounts SET status = 'active', last_error = NULL, updated_at = ?, request_revision = request_revision + 1 WHERE id = ?").run(now, id);
+      return true;
+    }).immediate();
+  }
+
+  /** Apply an in-flight request result only to the state it observed. */
+  recordObservedFailure(id: string, status: number, message: string, observed?: UpstreamAccount, usedToken?: string): boolean {
+    const db = getDb();
+    return db.transaction(() => {
+      const current = this.findById(id);
+      if (observed && (!current || current.stateRevision !== observed.stateRevision || (usedToken === undefined
+        ? current.credentials !== observed.credentials
+        : (parseStoredCredentials(current.credentials)?.accessToken ?? current.credentials) !== usedToken))) return false;
+      const nextStatus = status === 429 ? 'quota_exceeded' : status === 401 || status === 403 ? 'error' : null;
+      const guard = observed ? ' AND state_revision = ?' : '';
+      const params = observed ? [observed.stateRevision] : [];
+      const result = db.prepare(`UPDATE upstream_accounts SET status = COALESCE(?, status), last_error = ?, updated_at = ?, request_revision = request_revision + 1
+        WHERE id = ? AND status IN ('active', 'quota_exceeded')${guard}`)
+        .run(nextStatus, message, new Date().toISOString(), id, ...params);
+      return result.changes > 0;
+    }).immediate();
+  }
+
+  markQuotaExceeded(id: string, message = 'Rate limited by upstream (429)'): void {
+    getDb().prepare(`
+      UPDATE upstream_accounts SET status = 'quota_exceeded', last_error = ?, updated_at = ?, request_revision = request_revision + 1 WHERE id = ?
+    `).run(message, new Date().toISOString(), id);
+  }
+
   markError(id: string, error: string): void {
-    const db = getDb();
-    db.prepare(`
-      UPDATE upstream_accounts 
-      SET status = 'error', last_error = ?, updated_at = ?
-      WHERE id = ?
+    getDb().prepare(`
+      UPDATE upstream_accounts SET status = 'error', last_error = ?, updated_at = ?, request_revision = request_revision + 1 WHERE id = ?
     `).run(error, new Date().toISOString(), id);
   }
 
-  /**
-   * 할당량 리셋 (매일 자동 실행)
-   */
-  resetDailyQuotas(): void {
-    const db = getDb();
-    const tomorrow = new Date();
-    tomorrow.setHours(24, 0, 0, 0);
-
-    db.prepare(`
-      UPDATE upstream_accounts 
-      SET used_today = 0, 
-          quota_reset_at = ?,
-          status = CASE 
-            WHEN status = 'quota_exceeded' THEN 'active'
-            ELSE status
-          END,
-          updated_at = ?
-      WHERE quota_reset_at <= ?
-    `).run(tomorrow.toISOString(), new Date().toISOString(), new Date().toISOString());
+  setLastError(id: string, error: string): void {
+    getDb().prepare('UPDATE upstream_accounts SET last_error = ?, updated_at = ?, request_revision = request_revision + 1 WHERE id = ?')
+      .run(error, new Date().toISOString(), id);
   }
 
-  /**
-   * 모든 계정 조회
-   */
+  resetDailyQuotas(): void {
+    const tomorrow = new Date();
+    tomorrow.setHours(24, 0, 0, 0);
+    const now = new Date().toISOString();
+    getDb().prepare(`
+      UPDATE upstream_accounts
+      SET used_today = 0,
+          quota_reset_at = ?,
+          status = CASE WHEN status = 'quota_exceeded' THEN 'active' ELSE status END,
+          request_revision = request_revision + 1,
+          updated_at = ?
+      WHERE quota_reset_at <= ?
+    `).run(tomorrow.toISOString(), now, now);
+  }
+
   findAll(): UpstreamAccount[] {
-    const db = getDb();
-    const rows = db.prepare('SELECT * FROM upstream_accounts ORDER BY provider, priority, name').all();
+    const rows = getDb().prepare('SELECT * FROM upstream_accounts ORDER BY provider, priority, name').all();
     return rows.map(row => this.rowToAccount(row));
   }
 
-  /**
-   * 계정 삭제
-   */
   delete(id: string): void {
-    const db = getDb();
-    db.prepare('DELETE FROM upstream_accounts WHERE id = ?').run(id);
+    getDb().prepare('DELETE FROM upstream_accounts WHERE id = ?').run(id);
   }
 
   private rowToAccount(row: any): UpstreamAccount {
-    // 자격증명 복호화
     let credentials = row.credentials;
     try {
       credentials = vault.decrypt(row.credentials);
-    } catch (e) {
-      // 암호화되지 않은 평문일 수 있음 (마이그레이션 전)
+    } catch {
+      // 평문 (마이그레이션 전 데이터)
     }
 
     return {
@@ -226,7 +270,12 @@ export class AccountRepository {
       provider: row.provider,
       credentialType: row.credential_type,
       credentials,
+      meta: parseJson<AccountMeta>(row.meta, {}),
+      quotaInfo: parseJson<QuotaInfo | null>(row.quota_info, null),
       status: row.status,
+      stateRevision: row.state_revision,
+      credentialRevision: row.credential_revision,
+      lastRefreshRevision: row.last_refresh_revision,
       lastUsed: row.last_used ? new Date(row.last_used) : null,
       lastError: row.last_error,
       dailyQuota: row.daily_quota,

@@ -9,11 +9,64 @@ import { AccountRepository } from '../db/repositories/accounts.js';
 import { UsageLogRepository } from '../db/repositories/usage-logs.js';
 import { generateApiKey, hashApiKey } from '../utils/encryption.js';
 import { logger } from '../utils/logger.js';
+import { startLogin, finishLogin, getFlow, setOnLoginComplete, parseImportedCredential, type OAuthProvider } from '../upstream/oauth.js';
+
+import { SettingsRepository, STRATEGIES } from '../db/repositories/settings.js';
 
 const router = Router();
 const userRepo = new UserRepository();
 const accountRepo = new AccountRepository();
 const usageRepo = new UsageLogRepository();
+const settingsRepo = new SettingsRepository();
+
+setOnLoginComplete(async (flow, parsed) => accountRepo.create({
+  ...flow.params, provider: flow.provider, credentialType: parsed.credentialType,
+  credentials: parsed.credentials, meta: parsed.meta,
+}).id);
+
+function onboardingParams(body: any) {
+  if (!body || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 200 ||
+      !['anthropic', 'openai'].includes(body.provider) ||
+      (body.dailyQuota !== undefined && (!Number.isSafeInteger(body.dailyQuota) || body.dailyQuota < 0)) ||
+      (body.priority !== undefined && (!Number.isSafeInteger(body.priority) || body.priority < 0)) ||
+      (body.weight !== undefined && (!Number.isSafeInteger(body.weight) || body.weight < 1))) return null;
+  return { name: body.name.trim(), provider: body.provider as OAuthProvider, dailyQuota: body.dailyQuota, priority: body.priority, weight: body.weight };
+}
+
+router.post('/accounts/oauth/start', authenticateAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const params = onboardingParams(req.body);
+  if (!params) return res.status(400).json({ error: { message: 'Invalid account parameters' } });
+  try { return res.json(await startLogin(params.provider, params)); }
+  catch { return res.status(500).json({ error: { message: 'Could not start login' } }); }
+});
+
+router.get('/accounts/oauth/:flowId', authenticateAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const flow = getFlow(req.params.flowId);
+  if (!flow) return res.status(404).json({ error: { message: 'Login session not found or expired' } });
+  return res.json(flow);
+});
+
+router.post('/accounts/oauth/:flowId/finish', authenticateAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (typeof req.body?.code !== 'string' || !req.body.code || req.body.code.length > 8192)
+    return res.status(400).json({ error: { message: 'Invalid authorization response' } });
+  try { return res.json(await finishLogin(req.params.flowId, req.body.code)); }
+  catch { return res.status(400).json({ error: { message: 'Login failed; check the session and authorization response' } }); }
+});
+
+router.post('/accounts/import', authenticateAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const params = onboardingParams(req.body);
+  if (!params || typeof req.body?.credentials !== 'string' || !req.body.credentials || req.body.credentials.length > 65536)
+    return res.status(400).json({ error: { message: 'Invalid account parameters or credentials' } });
+  try {
+    const parsed = parseImportedCredential(params.provider, req.body.credentials);
+    const account = accountRepo.create({ ...params, ...parsed });
+    return res.status(201).json({ account: { id: account.id, name: account.name, provider: account.provider, credentialType: account.credentialType, status: account.status } });
+  } catch { return res.status(400).json({ error: { message: 'Could not import credentials' } }); }
+});
 
 /**
  * POST /admin/users
@@ -477,6 +530,75 @@ router.get('/stats', authenticateAdmin, (req: Request, res: Response) => {
     res.json(stats);
   } catch (error: any) {
     logger.error({ error }, 'Failed to get stats');
+    res.status(500).json({
+      error: {
+        type: 'internal_error',
+        message: error.message,
+      },
+    });
+  }
+});
+
+/**
+ * GET /admin/settings/strategy/:provider
+ * 라우팅 전략 조회
+ */
+router.get('/settings/strategy/:provider', authenticateAdmin, (req: Request, res: Response) => {
+  try {
+    const { provider } = req.params;
+    const strategy = settingsRepo.getStrategy(provider);
+    res.json({ provider, strategy });
+  } catch (error: any) {
+    logger.error({ error }, 'Failed to get strategy');
+    res.status(500).json({
+      error: {
+        type: 'internal_error',
+        message: error.message,
+      },
+    });
+  }
+});
+
+/**
+ * PUT /admin/settings/strategy/:provider
+ * 라우팅 전략 설정
+ */
+router.put('/settings/strategy/:provider', authenticateAdmin, (req: Request, res: Response) => {
+  try {
+    const { provider } = req.params;
+    const { strategy } = req.body;
+    if (!strategy || !STRATEGIES.includes(strategy)) {
+      res.status(400).json({
+        error: {
+          type: 'invalid_request',
+          message: `Invalid strategy. Use one of: ${STRATEGIES.join(', ')}`,
+        },
+      });
+      return;
+    }
+    settingsRepo.setStrategy(provider, strategy);
+    res.json({ provider, strategy });
+  } catch (error: any) {
+    logger.error({ error }, 'Failed to set strategy');
+    res.status(500).json({
+      error: {
+        type: 'internal_error',
+        message: error.message,
+      },
+    });
+  }
+});
+
+/**
+ * GET /admin/settings
+ * 전체 설정 조회
+ */
+router.get('/settings', authenticateAdmin, (req: Request, res: Response) => {
+  try {
+    const settings = settingsRepo.getAll();
+    res.json({ settings });
+  } catch (error: any) {
+    logger.error({ error }, 'Failed to get settings');
     res.status(500).json({
       error: {
         type: 'internal_error',

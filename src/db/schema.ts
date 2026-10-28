@@ -18,11 +18,16 @@ export interface UpstreamAccount {
   id: string;
   name: string;  // "Claude-A", "GPT-B"
   provider: 'anthropic' | 'openai' | 'google';
-  credentialType: 'cookie' | 'api_key' | 'session_token';
-  credentials: string;  // 암호화된 자격증명
+  credentialType: CredentialType;
+  credentials: string;  // 복호화된 자격증명 (oauth는 JSON 문자열)
+  meta: AccountMeta;    // 평문 메타정보 (이메일, 플랜, 토큰 만료)
+  quotaInfo: QuotaInfo | null; // 업스트림 레이트리밋 헤더 스냅샷
   
   // 상태
   status: 'active' | 'quota_exceeded' | 'error' | 'disabled';
+  stateRevision: number;
+  credentialRevision: number;
+  lastRefreshRevision: number;
   lastUsed: Date | null;
   lastError: string | null;
   
@@ -37,6 +42,22 @@ export interface UpstreamAccount {
   
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type CredentialType = 'cookie' | 'api_key' | 'session_token' | 'oauth';
+
+export interface AccountMeta {
+  email?: string | null;
+  plan?: string | null;
+  expiresAt?: number | null;   // access token 만료 (epoch ms)
+  source?: string | null;      // 'oauth_login' | 'claude_credentials' | 'setup_token' | 'codex_auth_json' ...
+  hasRefreshToken?: boolean;
+}
+
+export interface QuotaInfo {
+  capturedAt: string;
+  headers: Record<string, string>;
+  resetAt?: number | null;     // 429 시 다음 사용 가능 시각 (epoch ms)
 }
 
 export interface AccountPoolRule {
@@ -90,10 +111,15 @@ CREATE TABLE IF NOT EXISTS upstream_accounts (
   id TEXT PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   provider TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'google')),
-  credential_type TEXT NOT NULL CHECK (credential_type IN ('cookie', 'api_key', 'session_token')),
+  credential_type TEXT NOT NULL CHECK (credential_type IN ('cookie', 'api_key', 'session_token', 'oauth')),
   credentials TEXT NOT NULL,
+  meta TEXT,
+  quota_info TEXT,
   
   status TEXT NOT NULL CHECK (status IN ('active', 'quota_exceeded', 'error', 'disabled')),
+  state_revision INTEGER NOT NULL DEFAULT 0,
+  credential_revision INTEGER NOT NULL DEFAULT 0,
+  last_refresh_revision INTEGER NOT NULL DEFAULT -1,
   last_used TIMESTAMP,
   last_error TEXT,
   
@@ -145,6 +171,12 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (upstream_account_id) REFERENCES upstream_accounts(id) ON DELETE CASCADE
+);
+
+-- 설정 (라우팅 전략 등)
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
 -- 인덱스

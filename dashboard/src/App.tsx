@@ -5,7 +5,7 @@ import Accounts from './pages/Accounts'
 import UsersPage from './pages/Users'
 import Stats from './pages/Stats'
 
-const API_BASE = 'http://localhost:20100'
+const API_BASE = 'http://localhost:20101'
 
 type Page = 'dashboard' | 'accounts' | 'users' | 'stats'
 

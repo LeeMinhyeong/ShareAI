@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 
-const API_BASE = '/api'
+const API_BASE = 'http://localhost:20101'
 
 interface UsageLog {
   id: string

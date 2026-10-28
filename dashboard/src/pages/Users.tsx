@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw, Copy } from 'lucide-react'
 
-const API_BASE = '/api'
+const API_BASE = 'http://localhost:20101'
 
 interface User {
   id: string
