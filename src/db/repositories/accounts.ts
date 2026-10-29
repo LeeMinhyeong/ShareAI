@@ -9,6 +9,7 @@ import { CredentialVault } from '../../utils/encryption.js';
 
 const vault = new CredentialVault();
 const refreshFingerprint = (provider: string, token: string) => createHash('sha256').update(JSON.stringify([provider, token])).digest('hex');
+type AdminAccount = Omit<UpstreamAccount, 'credentials' | 'meta' | 'quotaInfo'> & { credentialStatus: 'available' | 'unavailable' };
 
 function parseJson<T>(text: string | null | undefined, fallback: T): T {
   if (!text) return fallback;
@@ -79,7 +80,7 @@ export class AccountRepository {
         ORDER BY priority ASC, name ASC
       `)
       .all(provider);
-    return rows.map(row => this.rowToAccount(row));
+    return this.readUsableRows(rows);
   }
 
   create(data: {
@@ -249,20 +250,49 @@ export class AccountRepository {
 
   findAll(): UpstreamAccount[] {
     const rows = getDb().prepare('SELECT * FROM upstream_accounts ORDER BY provider, priority, name').all();
-    return rows.map(row => this.rowToAccount(row));
+    return this.readUsableRows(rows);
+  }
+
+  /** Admin views never expose stored or decrypted credentials, even on failure. */
+  findAllAdmin(): AdminAccount[] {
+    return getDb().prepare('SELECT * FROM upstream_accounts ORDER BY provider, priority, name').all().map(row => this.rowToAdmin(row));
+  }
+
+  findByIdAdmin(id: string): AdminAccount | null {
+    const row = getDb().prepare('SELECT * FROM upstream_accounts WHERE id = ?').get(id);
+    return row ? this.rowToAdmin(row) : null;
+  }
+
+  private readUsableRows(rows: any[]): UpstreamAccount[] {
+    const accounts: UpstreamAccount[] = [];
+    for (const row of rows) {
+      let credentials: string;
+      try { credentials = vault.decrypt(row.credentials); } catch { continue; }
+      accounts.push(this.rowToAccount(row, credentials));
+    }
+    return accounts;
+  }
+
+  private rowToAdmin(row: any): AdminAccount {
+    let credentialStatus: AdminAccount['credentialStatus'] = 'available';
+    try { vault.decrypt(row.credentials); } catch { credentialStatus = 'unavailable'; }
+    const { credentials, meta, quotaInfo, ...safe } = this.rowToAccount(row, '');
+    // Upstream error text can contain old credentials even after replacement.
+    // Preserve it in storage, but never return it through the admin API.
+    const lastError = credentialStatus === 'unavailable'
+      ? 'Credential unavailable; verify the encryption key or replace credentials'
+      : safe.lastError ? 'Account error details redacted' : null;
+    return { ...safe, lastError, credentialStatus };
   }
 
   delete(id: string): void {
     getDb().prepare('DELETE FROM upstream_accounts WHERE id = ?').run(id);
   }
 
-  private rowToAccount(row: any): UpstreamAccount {
-    let credentials = row.credentials;
-    try {
-      credentials = vault.decrypt(row.credentials);
-    } catch {
-      // 평문 (마이그레이션 전 데이터)
-    }
+  private rowToAccount(row: any, decrypted?: string): UpstreamAccount {
+    // Unmarked legacy plaintext cannot be distinguished safely from corrupted
+    // ciphertext or a ciphertext encrypted under a different key.
+    const credentials = decrypted ?? vault.decrypt(row.credentials);
 
     return {
       id: row.id,

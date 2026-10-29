@@ -30,6 +30,15 @@ declare global {
  * API 키 기반 사용자 인증
  */
 export function authenticateUser(req: Request, res: Response, next: NextFunction): void {
+  authenticate(req, res, next, true);
+}
+
+/** Authenticate read-only routes without reserving an inference request. */
+export function authenticateUserWithoutQuota(req: Request, res: Response, next: NextFunction): void {
+  authenticate(req, res, next, false);
+}
+
+function authenticate(req: Request, res: Response, next: NextFunction, reserveQuota: boolean): void {
   // Authorization 헤더 또는 x-api-key 헤더에서 키 추출
   let apiKey: string | undefined;
   
@@ -52,10 +61,23 @@ export function authenticateUser(req: Request, res: Response, next: NextFunction
 
   // API 키 해시 후 DB 조회
   const keyHash = hashApiKey(apiKey);
-  const user = userRepo.findByApiKeyHash(keyHash);
+  let reservation: ReturnType<UserRepository['reserveDailyQuota']> | undefined;
+  let user: ReturnType<UserRepository['findByApiKeyHash']>;
+  try {
+    if (reserveQuota) {
+      reservation = userRepo.reserveDailyQuota(keyHash);
+      user = reservation.user;
+    } else {
+      user = userRepo.findByApiKeyHash(keyHash);
+    }
+  } catch (error) {
+    logger.error({ error }, reserveQuota ? 'User quota reservation failed' : 'User authentication lookup failed');
+    res.status(503).json({ error: { type: 'service_unavailable', message: reserveQuota ? 'Unable to reserve daily quota.' : 'Unable to authenticate user.' } });
+    return;
+  }
 
   if (!user) {
-    logger.warn({ keyHash: keyHash.slice(0, 16) + '...' }, 'Invalid API key');
+    logger.warn('Invalid API key');
     res.status(401).json({
       error: {
         type: 'authentication_error',
@@ -66,8 +88,8 @@ export function authenticateUser(req: Request, res: Response, next: NextFunction
   }
 
   // 일일 제한 확인
-  const todayUsage = userRepo.getTodayUsageCount(user.id);
-  if (todayUsage >= user.dailyLimit) {
+  if (reservation && !reservation.allowed) {
+    const todayUsage = reservation.used;
     logger.warn({ userId: user.id, todayUsage, limit: user.dailyLimit }, 'User daily limit exceeded');
     res.status(429).json({
       error: {

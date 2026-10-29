@@ -101,19 +101,30 @@ export class UserRepository {
     db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   }
 
+  /** Reserve under a SQLite write lock, rechecking enabled status and limit. */
+  reserveDailyQuota(apiKeyHash: string, now?: Date): { user: User | null; used: number; allowed: boolean } {
+    const db = getDb();
+    return db.transaction(() => {
+      const row = db.prepare('SELECT * FROM users WHERE api_key_hash = ? AND enabled = 1').get(apiKeyHash);
+      if (!row) return { user: null, used: 0, allowed: false };
+      const user = this.rowToUser(row);
+      const day = (now ?? new Date()).toISOString().slice(0, 10);
+      const count = db.prepare('SELECT used FROM user_daily_quota WHERE user_id = ? AND day = ?').get(user.id, day) as { used: number } | undefined;
+      const used = count?.used ?? 0;
+      if (used >= user.dailyLimit) return { user, used, allowed: false };
+      db.prepare(`INSERT INTO user_daily_quota (user_id, day, used) VALUES (?, ?, 1)
+        ON CONFLICT(user_id, day) DO UPDATE SET used = used + 1`).run(user.id, day);
+      return { user, used: used + 1, allowed: true };
+    }).immediate();
+  }
+
   /**
    * 오늘 사용량 조회
    */
   getTodayUsageCount(userId: string): number {
-    const db = getDb();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const result = db
-      .prepare('SELECT COUNT(*) as count FROM usage_logs WHERE user_id = ? AND timestamp >= ? AND success = 1')
-      .get(userId, today.toISOString()) as { count: number };
-
-    return result.count;
+    const day = new Date().toISOString().slice(0, 10);
+    const result = getDb().prepare('SELECT used FROM user_daily_quota WHERE user_id = ? AND day = ?').get(userId, day) as { used: number } | undefined;
+    return result?.used ?? 0;
   }
 
   private rowToUser(row: any): User {

@@ -37,6 +37,9 @@ export class CredentialVault {
     }
 
     const [ivHex, authTagHex, encrypted] = parts;
+    if (!/^[0-9a-fA-F]{32}$/.test(ivHex) || !/^[0-9a-fA-F]{32}$/.test(authTagHex) || !/^(?:[0-9a-fA-F]{2})*$/.test(encrypted)) {
+      throw new Error('Invalid ciphertext format');
+    }
 
     const iv = Buffer.from(ivHex, 'hex');
     const authTag = Buffer.from(authTagHex, 'hex');

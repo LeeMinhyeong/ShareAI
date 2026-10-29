@@ -3,7 +3,7 @@
  */
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { authenticateUser } from '../auth/user-auth.js';
+import { authenticateUser, authenticateUserWithoutQuota } from '../auth/user-auth.js';
 import { forwardChat } from '../upstream/forward-chat.js';
 
 const router = Router();
@@ -34,7 +34,7 @@ router.post('/messages', authenticateUser, async (req: Request, res: Response) =
  * GET /v1/models
  * 사용 가능한 모델 목록
  */
-router.get('/models', authenticateUser, (req: Request, res: Response) => {
+router.get('/models', authenticateUserWithoutQuota, (req: Request, res: Response) => {
   res.json({
     object: 'list',
     data: [

@@ -73,8 +73,14 @@ router.post('/accounts/import', authenticateAdmin, (req, res) => {
  * 사용자 생성
  */
 router.post('/users', authenticateAdmin, (req: Request, res: Response) => {
+  res.set('Cache-Control', 'no-store');
   try {
     const { name, email, tier = 'free', dailyLimit = 100 } = req.body;
+
+    if (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0 || req.body.enabled !== undefined) {
+      res.status(400).json({ error: { type: 'invalid_request', message: 'Invalid dailyLimit or unsupported enabled field' } });
+      return;
+    }
 
     if (!name || !email) {
       res.status(400).json({
@@ -220,6 +226,12 @@ router.patch('/users/:id', authenticateAdmin, (req: Request, res: Response) => {
     const { id } = req.params;
     const { name, email, tier, dailyLimit, enabled } = req.body;
 
+    if ((dailyLimit !== undefined && (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0)) ||
+        (enabled !== undefined && typeof enabled !== 'boolean')) {
+      res.status(400).json({ error: { type: 'invalid_request', message: 'Invalid dailyLimit or enabled' } });
+      return;
+    }
+
     const user = userRepo.findById(id);
     if (!user) {
       res.status(404).json({
@@ -319,7 +331,7 @@ router.post('/accounts', authenticateAdmin, (req: Request, res: Response) => {
  */
 router.get('/accounts', authenticateAdmin, (req: Request, res: Response) => {
   try {
-    const accounts = accountRepo.findAll();
+    const accounts = accountRepo.findAllAdmin();
 
     res.json({
       accounts: accounts.map(acc => ({
@@ -327,6 +339,7 @@ router.get('/accounts', authenticateAdmin, (req: Request, res: Response) => {
         name: acc.name,
         provider: acc.provider,
         credentialType: acc.credentialType,
+        credentialStatus: acc.credentialStatus,
         status: acc.status,
         lastUsed: acc.lastUsed,
         lastError: acc.lastError,
@@ -357,7 +370,7 @@ router.get('/accounts', authenticateAdmin, (req: Request, res: Response) => {
 router.get('/accounts/:id', authenticateAdmin, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const account = accountRepo.findById(id);
+    const account = accountRepo.findByIdAdmin(id);
 
     if (!account) {
       res.status(404).json({
@@ -379,6 +392,7 @@ router.get('/accounts/:id', authenticateAdmin, (req: Request, res: Response) => 
         provider: account.provider,
         credentialType: account.credentialType,
         // credentials는 보안상 노출하지 않음
+        credentialStatus: account.credentialStatus,
         status: account.status,
         lastUsed: account.lastUsed,
         lastError: account.lastError,
@@ -422,7 +436,7 @@ router.patch('/accounts/:id', authenticateAdmin, (req: Request, res: Response) =
     const { id } = req.params;
     const { name, status, dailyQuota, priority, weight, credentials } = req.body;
 
-    const account = accountRepo.findById(id);
+    const account = accountRepo.findByIdAdmin(id);
     if (!account) {
       res.status(404).json({
         error: {
@@ -437,12 +451,13 @@ router.patch('/accounts/:id', authenticateAdmin, (req: Request, res: Response) =
 
     logger.info({ accountId: id }, 'Account updated');
 
-    const updated = accountRepo.findById(id)!;
+    const updated = accountRepo.findByIdAdmin(id)!;
     res.json({
       account: {
         id: updated.id,
         name: updated.name,
         provider: updated.provider,
+        credentialStatus: updated.credentialStatus,
         status: updated.status,
         dailyQuota: updated.dailyQuota,
         priority: updated.priority,
@@ -469,7 +484,7 @@ router.delete('/accounts/:id', authenticateAdmin, (req: Request, res: Response) 
   try {
     const { id } = req.params;
 
-    const account = accountRepo.findById(id);
+    const account = accountRepo.findByIdAdmin(id);
     if (!account) {
       res.status(404).json({
         error: {
@@ -485,6 +500,10 @@ router.delete('/accounts/:id', authenticateAdmin, (req: Request, res: Response) 
 
     res.status(204).end();
   } catch (error: any) {
+    if (error?.message === 'account has usage history') {
+      res.status(409).json({ error: { type: 'conflict', message: 'Account has usage history; disable it instead' } });
+      return;
+    }
     logger.error({ error }, 'Failed to delete account');
     res.status(500).json({
       error: {
@@ -502,7 +521,7 @@ router.delete('/accounts/:id', authenticateAdmin, (req: Request, res: Response) 
 router.get('/stats', authenticateAdmin, (req: Request, res: Response) => {
   try {
     const users = userRepo.findAll();
-    const accounts = accountRepo.findAll();
+    const accounts = accountRepo.findAllAdmin();
 
     const stats = {
       users: {
