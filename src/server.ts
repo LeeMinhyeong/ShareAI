@@ -189,6 +189,17 @@ try {
     }
   });
   server.on('error', () => failStartup('HTTP listener failed'));
+  // After shutdown starts, a keep-alive connection that becomes idle must not hold the process (and
+  // server.close) open until the deadline: close it as soon as its in-flight response finishes.
+  // Only this response's own socket is ended, and gracefully (end flushes buffered output before
+  // FIN), so another connection's unflushed response tail is never cut.
+  server.on('request', (req, res) => {
+    const socket = req.socket;
+    res.once('finish', () => {
+      if (!shuttingDown) return;
+      setImmediate(() => { try { if (!socket.destroyed) socket.end(); } catch { /* best effort */ } });
+    });
+  });
 } catch {
   failStartup('Server startup failed');
 }
@@ -256,6 +267,9 @@ function shutdown(signal: string): void {
         catch { failure('Failed to unref shutdown deadline'); }
       }).catch(() => { if (!deadlineFired) failure('Failed to complete shutdown'); });
     });
+    // Connections already idle when shutdown starts close now (Node >= 19 close() also does this; kept
+    // explicit). Busy ones are ended when their response finishes (request listener above).
+    try { server.closeIdleConnections(); } catch { /* best effort */ }
   } catch {
     failure('Failed to close HTTP server');
   }

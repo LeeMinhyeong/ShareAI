@@ -84,9 +84,9 @@ test('actual quota caller fails closed when commit is applied but its acknowledg
     return result;
   };
   try {
-    await assert.rejects(quota.invokeAccountAttempt(account,new AbortController().signal,()=>{
+    /* The async writer replaces the injected error with its own generic unknown-outcome error (it never forwards raw errors; see async-writer.ts). Fail-closed state is asserted after it. */ await assert.rejects(quota.invokeAccountAttempt(account,new AbortController().signal,()=>{
       starts++; return Promise.resolve(new Response('unexpected'));
-    }),/simulated lost commit acknowledgement/);
+    }),e=>/Writer commit outcome is unknown/.test(e.message)&&!/simulated/.test(String(e.stack))&&!('cause' in e));
     assert.equal(injected,1);
     assert.equal(starts,0);
     assert.equal(read().quota.used,1);

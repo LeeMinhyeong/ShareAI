@@ -203,3 +203,16 @@ oauth-refresh-http-cancel(timeout), oauth-refresh-intent-boundary('unknown commi
 
 ## 간헐 (1)
 phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. 부하 시 실패.
+
+
+## Phase 5 전 게이트 리뷰 잔여 (2026-11-10, deleg_51f08aa9)
+
+- **(우선) 토큰 갱신 응답 본문이 끝나지 않을 때 refresh flight가 무기한 대기할 수 있음.** `oauth-refresh-http-cancel` 조사 중 관찰했고 확인은 아직 안 했다. 그 계정의 요청이 모두 묶이고, 종료 시 drain이 5초 제한에 걸려 종료 코드 1이 된다. refresh fetch의 시간 제한이 본문 읽기까지 덮는지 확인한다.
+- keep-alive 종료 보강 테스트를 추가한다.
+  - (i) 종료 전에 이미 쉬고 있던 keep-alive 연결이 있을 때 빠르게 종료 코드 0으로 끝나는지
+  - (ii) 종료 후 기존 keep-alive 소켓으로 보낸 요청이 503을 받고, 연결이 닫히고, 종료 코드 0인지
+  - (iii) 느린 클라이언트의 큰 응답 본문이 다른 요청 종료 때문에 잘리지 않는지. 구현은 각 응답 자신의 소켓만 `end()`(버퍼를 비운 뒤 종료)하도록 바꿨다.
+- writer 밖에서 쓰기를 시도하면 busy_timeout(5초) 동안 이벤트 루프가 동기로 막힌다. writer 밖 쓰기 경로를 막는 정적 검사나 테스트 가드를 둔다.
+- `oauth-refresh-http-cancel`: 각 사례 뒤에 남은 refresh flight가 0인지 단언한다(사례 사이 오염 탐지).
+- `phase2-quota-http` 사례 5: 공유 v2 5xx 제한이 기록됐는지 단언한다.
+- `phase4-least-used-utc-http`: poison 워커가 ready 이후 비협조 상태에서 정리되는지 확인한다.

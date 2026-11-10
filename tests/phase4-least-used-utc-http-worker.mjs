@@ -8,6 +8,7 @@ import express from 'express';
 import {chatStream, responseStream} from './phase4-protocol-fixtures.mjs';
 const dir=mkdtempSync(path.join(process.env.TMPDIR,'least-utc-'));
 Object.assign(process.env,{NODE_ENV:'test',DATABASE_URL:`sqlite:${path.join(dir,'db.sqlite')}`,ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_LEVEL:'error',LOG_PRETTY:'false'});
+await (await import('./helpers/fresh-db.mjs')).provisionFromEnv(); // what db:init does (ADR 0018)
 const {getDb,closeDatabase}=await import('../src/db/client.ts');
 const {CredentialVault,hashApiKey}=await import('../src/utils/encryption.ts');
 const {SiwcStore}=await import('../src/upstream/siwc-store.ts');

@@ -1,3 +1,4 @@
+// NOTE: the drainTokenRefreshes case permanently closes refresh admission for this process; keep it last.
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
@@ -6,6 +7,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
+import {responseStream} from './phase4-protocol-fixtures.mjs';
 const dir=mkdtempSync(path.join(process.env.TMPDIR,'oauth-http-'));
 Object.assign(process.env,{NODE_ENV:'test',DATABASE_URL:`sqlite:${path.join(dir,'db.sqlite')}`,ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_LEVEL:'error',LOG_PRETTY:'false'});
 const {getDb,closeDatabase}=await import('../src/db/client.ts');
@@ -27,15 +29,22 @@ after(async()=>{await drainTokenRefreshes();await new Promise(r=>server.close(r)
 test('authenticated HTTP refresh yields while another process owns the writer', {timeout:7000},async()=>{
  const a=create('http-lock',Date.now()-1);const oldFetch=globalThis.fetch,oldSelect=accountPool.selectCandidate;let child,locked;const barrier=new Promise(r=>locked=r);
  accountPool.selectCandidate=async function(...args){const candidate=await oldSelect.apply(this,args);child=fork(new URL('./phase4-result-lock-worker.mjs',import.meta.url),[getDb().name],{stdio:['ignore','ignore','inherit','ipc']});await once(child,'message');locked();return candidate;};
- globalThis.fetch=async url=>String(url).includes('oauth/token') ? new Response(JSON.stringify({access_token:'new',refresh_token:'rotated',expires_in:3600})) : new Response('data: {"type":"response.completed","response":{}}\n\n',{headers:{'content-type':'text/event-stream'}});
+ globalThis.fetch=async url=>String(url).includes('oauth/token') ? new Response(JSON.stringify({access_token:'new',refresh_token:'rotated',expires_in:3600})) : new Response(responseStream,{headers:{'content-type':'text/event-stream'}}) /* a complete stream under the strict SSE terminal (Phase 4) */;
  let req;try {const result=new Promise((resolve,reject)=>{req=http.request({host:'127.0.0.1',port:server.address().port,path:'/v1/chat/completions',method:'POST',headers:{authorization:'Bearer fixture-key','content-type':'application/json'}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);req.end(JSON.stringify({model:'gpt-5',messages:[{role:'user',content:'hello'}]}));});await barrier;const start=performance.now();await new Promise(r=>setTimeout(r,100));assert.ok(performance.now()-start<1000,'HTTP refresh blocked the event loop');child.send('release');await once(child,'exit');assert.equal(await result,200);assert.equal(JSON.parse(repo.findById(a.id).credentials).refreshToken,'rotated');}
  finally {req?.destroy();accountPool.selectCandidate=oldSelect;globalThis.fetch=oldFetch;if(child?.connected)child.send('release');if(child&&child.exitCode===null&&child.signalCode===null)await once(child,'exit');if(handling)await handling;repo.update(a.id,{status:'disabled'});}
 });
 test('disconnect before a pending 401 is handled never starts refresh', {timeout:5000},async()=>{
  const a=create('before401',Date.now()+3600000);let entered,release;const barrier=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const old=globalThis.fetch;let calls=0;
- globalThis.fetch=async()=>{calls++;return new Response(new ReadableStream({cancel(){entered();return gate;}}),{status:401});};
+ /* ADR 0017: the router no longer waits for a rejected body's cancel, so hold the 401 itself until the disconnect is observed. Four layered guards stop the refresh after a disconnect: forward-chat's throwIfAborted before refresh, resolveAuth's entry check, refreshSerialized's entry check, and the flight cancel when its last waiter aborts (tokens.ts). Removing all four makes this test fail (2026-11-10); the control test below shows the same held 401 does refresh without a disconnect. */ globalThis.fetch=async()=>{calls++;entered();await gate;return new Response('unauthorized',{status:401});};
  let req;try {req=request();await barrier;req.destroy();await new Promise(r=>setTimeout(r,50));release();await handling;assert.equal(calls,1);assert.equal(getDb().prepare('SELECT count(*) AS n FROM oauth_refresh_intents WHERE account_id=?').get(a.id).n,0);} finally {release();req?.destroy();globalThis.fetch=old;repo.update(a.id,{status:'disabled'});}
 });
+test('control: without a disconnect the same held 401 starts a refresh', {timeout:5000},async()=>{
+ const restore=repo.findAll().map(o=>[o.id,o.status]); for (const [id] of restore) repo.update(id,{status:'disabled'}); /* placed before the drainTokenRefreshes test, which closes refresh admission for the rest of the file */ /* isolate from accounts left active by earlier tests */
+ const a=create('control401',Date.now()+3600000);let entered,release;const barrier=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const old=globalThis.fetch;const urls=[];
+ globalThis.fetch=async url=>{urls.push(String(url));if(urls.length===1){entered();await gate;}return new Response('unauthorized',{status:401});};
+ let req;try {req=request();await barrier;release();await handling;assert.equal(urls.length,2,urls.join(','));assert.match(urls[1],/oauth\/token/);} finally {release();req?.destroy();globalThis.fetch=old;repo.update(a.id,{status:'disabled'});for (const [id,status] of restore) repo.update(id,{status});}
+});
+
 test('disconnect after refresh starts still persists the rotated credential', {timeout:5000},async()=>{
  const a=create('disconnect',Date.now()-1);let entered,release;const barrier=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const old=globalThis.fetch;let calls=0;
  globalThis.fetch=async()=>{calls++;entered();await gate;return new Response(JSON.stringify({access_token:'new',refresh_token:'new-refresh',expires_in:3600}));};

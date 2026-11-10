@@ -32,10 +32,10 @@ async function fixture(mode = '') {
 }
 // Connection: close so no idle keep-alive socket keeps the worker alive after a response: whatever
 // keeps the process alive for post-response work must be the server's own drain, not the client.
-const send = (port, stream, signal) => new Promise((resolve, reject) => {
+const send = (port, stream, signal, agent = false) => new Promise((resolve, reject) => {
   const payload = body(stream);
-  const req = http.request({host:'127.0.0.1', port, path:'/v1/chat/completions', method:'POST', agent:false, signal,
-    headers:{authorization:'Bearer fixture-key', 'content-type':'application/json', 'content-length':Buffer.byteLength(payload), connection:'close'}}, res => {
+  const req = http.request({host:'127.0.0.1', port, path:'/v1/chat/completions', method:'POST', agent, signal,
+    headers:{authorization:'Bearer fixture-key', 'content-type':'application/json', 'content-length':Buffer.byteLength(payload), ...(agent ? {} : {connection:'close'})}}, res => {
     const chunks = []; const done = new Promise((ok, fail) => { res.on('data', c => chunks.push(c)); res.on('end', () => ok(Buffer.concat(chunks).toString('utf8'))); res.on('error', fail); res.on('aborted', () => fail(new Error('aborted'))); });
     done.catch(() => {});
     resolve({status: res.statusCode, headers: res.headers, text: () => done});
@@ -110,4 +110,24 @@ test('post-response DB work (success accounting, usage log) is drained before ex
     assert.match(f.stdout(), /POST_RESPONSE_DONE/, 'the process waited for work after the response');
     assert.deepEqual(read(f.file).usage, [{success:1}], 'usage logged after the response but before exit');
   } finally { await f.cleanup(); }
+});
+
+// Real clients keep connections alive. Once shutdown has started, an idle keep-alive connection must
+// not hold the process (and the 5s deadline) open after its in-flight request completes.
+test('a keep-alive client does not delay exit after its in-flight request completes', {timeout: 20000}, async () => {
+  const f = await fixture();
+  const agent = new http.Agent({keepAlive: true, keepAliveMsecs: 60000});
+  try {
+    const inFlight = send(f.port, false, undefined, agent);
+    await f.firstDispatch;
+    f.child.send('shutdown');
+    await new Promise(r => setTimeout(r, 200));
+    f.release();
+    const response = await inFlight;
+    assert.equal(response.status, 200);
+    await response.text();
+    const done = performance.now();
+    assert.equal(await f.exited, 0, f.stderr());
+    assert.ok(performance.now() - done < 1500, `exit took ${Math.round(performance.now() - done)}ms after the response`);
+  } finally { agent.destroy(); await f.cleanup(); }
 });

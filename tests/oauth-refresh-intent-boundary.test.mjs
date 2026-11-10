@@ -40,7 +40,7 @@ test('unknown commit outcome remains fenced even when provider was never called'
  globalThis.fetch=async()=>{calls++;throw Error('unexpected provider');};
  proto.exec=function(sql){const result=oldExec.call(this,sql);if(sql==='COMMIT'&&!injected&&this.prepare('SELECT 1 FROM oauth_refresh_intents WHERE account_id=?').get(a.id)){injected=true;throw Error('injected unknown commit outcome');}return result;};
  try{
-  await assert.rejects(resolveAuth(a),/injected unknown commit outcome/);assert.equal(injected,true);assert.equal(intentCount(a.id),1);assert.equal(calls,0);
+  /* The async writer replaces the injected error with its own generic unknown-outcome error (it never forwards raw errors; see async-writer.ts). Fail-closed state is asserted after it. */ await assert.rejects(resolveAuth(a),e=>/Writer commit outcome is unknown/.test(e.message)&&!/injected/.test(String(e.stack))&&!('cause' in e));assert.equal(injected,true);assert.equal(intentCount(a.id),1);assert.equal(calls,0);
   const competing=otherClaim(a.id);assert.equal(competing.status,1,competing.stderr);assert.match(competing.stderr,/reauthentication required/);
   await assert.rejects(resolveAuth(repo.findById(a.id)),/reauthentication required/);assert.equal(calls,0);
  }finally{proto.exec=oldExec;globalThis.fetch=oldFetch;}

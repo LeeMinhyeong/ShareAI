@@ -103,6 +103,9 @@ test('upstream failure and unimplemented inference retain reservations', async (
 });
 
 test('client disconnect after provider starts retains its reservation', async () => {
+  // The previous test's 500 left the first account restricted (shared v2 5xx restriction, ADR 0012)
+  // and in this process's local backoff, so this request needs a fresh eligible account.
+  new AccountRepository().create({ name: 'mock provider (disconnect)', provider: 'openai', credentialType: 'api_key', credentials: 'sk-synthetic-disconnect' });
   const key = 'disconnect-http'; const u = user(key); const originalFetch = globalThis.fetch;
   let providerStarted, providerAborted;
   const started = new Promise(resolve => { providerStarted = resolve; });
@@ -130,10 +133,14 @@ test('inference fails closed if user is disabled or deleted immediately before r
     const key = `race-${action}`; const u = user(key);
     let upstreamCalled = false; const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { upstreamCalled = true; throw new Error('unexpected upstream'); };
-    UserRepository.prototype.reserveDailyQuota = function(hash) {
-      if (action === 'disabled') repo.update(u.id, { enabled: false });
-      else initDatabase().prepare('DELETE FROM users WHERE id = ?').run(u.id);
-      return original.call(this, hash);
+    // Reservation now runs inside the async writer and receives its handle (ADR 0010); forward every
+    // argument and mutate through that same handle.
+    UserRepository.prototype.reserveDailyQuota = function(hash, now, writer) {
+      assert.ok(writer, 'reservation must run inside the async writer (ADR 0010)');
+      const db = writer;
+      if (action === 'disabled') db.prepare('UPDATE users SET enabled = 0 WHERE id = ?').run(u.id);
+      else db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+      return original.call(this, hash, now, writer);
     };
     try {
       assert.equal((await request('/v1/chat/completions', key, chat)).status, 401);

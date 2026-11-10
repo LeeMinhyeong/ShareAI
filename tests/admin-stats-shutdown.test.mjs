@@ -134,7 +134,9 @@ if (process.argv.includes('--fixture')) {
   }
   process.stdout.write('fixture ok\n');
 } else {
-  test('admin stats owns synchronous reads through response and shutdown', { timeout: 10000 }, async () => {
+  test('admin stats owns synchronous reads through response and shutdown', { timeout: 90000 }, async () => {
+    // The fixture is CPU-bound: ~3s idle, 15-17s measured with 5 parallel copies plus a full suite run.
+    // This test checks voluntary exit (signal === null), not speed; the kill timer only bounds a hang.
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--fixture'], { env: {}, stdio: ['ignore','pipe','pipe'] });
     let stdout='', stderr='', closed=false, spawnError=false, overflow=false;
     const collect = (which, b) => {
@@ -144,12 +146,12 @@ if (process.argv.includes('--fixture')) {
     child.stdout.on('data', b => collect('stdout', b)); child.stderr.on('data', b => collect('stderr', b));
     child.on('error',()=>{spawnError=true;});
     const close = new Promise(resolve=>child.once('close',(c,s)=>{closed=true; resolve([c,s]);}));
-    let killTimer, closeTimer;
+    let killTimer, closeTimer; const began=performance.now();
     try {
-      killTimer=setTimeout(()=>child.kill(),5000);
-      const [code, signal] = await Promise.race([close, new Promise((_,reject)=>{closeTimer=setTimeout(()=>reject(new Error('fixture child close unconfirmed')),7000);})]);
+      killTimer=setTimeout(()=>child.kill(),60000);
+      const [code, signal] = await Promise.race([close, new Promise((_,reject)=>{closeTimer=setTimeout(()=>reject(new Error('fixture child close unconfirmed')),62000);})]);
       assert.equal(spawnError,false,'fixture child error'); assert.equal(overflow,false,'fixture output exceeded limit');
-      assert.equal(signal,null); assert.equal(code,0,'fixture child failed'); assert.ok(stderr === '', 'fixture wrote stderr'); assert.ok(stdout === 'fixture ok\n', 'unexpected fixture output');
+      assert.equal(signal,null,`fixture child was killed after ${Math.round(performance.now()-began)}ms`); assert.equal(code,0,'fixture child failed'); assert.ok(stderr === '', 'fixture wrote stderr'); assert.ok(stdout === 'fixture ok\n', 'unexpected fixture output');
     } finally { if (!closed) child.kill(); clearTimeout(killTimer); clearTimeout(closeTimer); }
   });
 }
