@@ -45,3 +45,7 @@ temp/
 # 소스 참조 (별도 관리)
 omniroute-source/
 opencodex-source/
+
+# 로컬 작업 산출물
+logs-backend.txt
+.hermes/

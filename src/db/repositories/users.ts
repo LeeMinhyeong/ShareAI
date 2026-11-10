@@ -102,20 +102,25 @@ export class UserRepository {
   }
 
   /** Reserve under a SQLite write lock, rechecking enabled status and limit. */
-  reserveDailyQuota(apiKeyHash: string, now?: Date): { user: User | null; used: number; allowed: boolean } {
-    const db = getDb();
-    return db.transaction(() => {
+  reserveDailyQuota(apiKeyHash: string, now?: Date, writer?: import('better-sqlite3').Database): { user: User | null; used: number; allowed: boolean } {
+    const db = writer ?? getDb();
+    const reserve = () => {
       const row = db.prepare('SELECT * FROM users WHERE api_key_hash = ? AND enabled = 1').get(apiKeyHash);
       if (!row) return { user: null, used: 0, allowed: false };
       const user = this.rowToUser(row);
       const day = (now ?? new Date()).toISOString().slice(0, 10);
       const count = db.prepare('SELECT used FROM user_daily_quota WHERE user_id = ? AND day = ?').get(user.id, day) as { used: number } | undefined;
-      const used = count?.used ?? 0;
+      const used = count === undefined ? 0 : count.used;
+      // Legacy or externally modified SQLite rows must not bypass admission via
+      // JavaScript coercion (for example, a nonnumeric daily limit).
+      if (!Number.isSafeInteger(user.dailyLimit) || user.dailyLimit < 0 ||
+          !Number.isSafeInteger(used) || used < 0) throw new Error('Invalid user quota state');
       if (used >= user.dailyLimit) return { user, used, allowed: false };
       db.prepare(`INSERT INTO user_daily_quota (user_id, day, used) VALUES (?, ?, 1)
         ON CONFLICT(user_id, day) DO UPDATE SET used = used + 1`).run(user.id, day);
       return { user, used: used + 1, allowed: true };
-    }).immediate();
+    };
+    return writer ? reserve() : db.transaction(reserve).immediate();
   }
 
   /**

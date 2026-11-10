@@ -1,6 +1,6 @@
 # ShareAI 개선 백로그
 
-Phase 1 코드 리뷰·테스트 과정에서 확인했지만 해당 단계의 완료 범위 밖으로 분리한 개선 항목입니다. **완료된 기능 목록이 아닙니다.** 상태는 확인된 사실과 미검증 사항을 구분하며, 구현 후 별도 에이전트의 코드 리뷰와 테스트를 거쳐 완료 처리합니다. 전체 개발 단계와 완료 기준은 [README 로드맵](./README.md#️-개발-로드맵)을 따릅니다.
+각 Phase의 코드 리뷰·테스트 과정에서 확인한 미완료 및 개선 항목입니다. **완료된 기능 목록이 아닙니다.** 상태는 확인된 사실과 미검증 사항을 구분하며, 구현 후 별도 에이전트의 코드 리뷰와 테스트를 거쳐 완료 처리합니다. 전체 개발 단계와 완료 기준은 [README 로드맵](./README.md#️-개발-로드맵)을 따릅니다.
 
 ## 우선 처리: 구독 계정과 안전성
 
@@ -26,6 +26,45 @@ Phase 1 코드 리뷰·테스트 과정에서 확인했지만 해당 단계의 �
 
 ## 클라이언트·요청 처리
 
+### [ ] 같은 요청의 다른 계정 재전송 (Phase 4 범위 밖)
+- **관련 Phase:** 4 이후 — [ADR 0016](./docs/adr/0016-phase4-scope-freeze.md)에서 범위 제외
+- **위치:** `src/upstream/forward-chat.ts`, [ADR 0005](./docs/adr/0005-retry-failover-policy.md)
+- **현재 상태:** 비활성. 공급자별 "실행 전 거절" 근거가 없어 허용 signature가 없습니다. 429를 받은 요청 하나는 사용자에게 실패로 보입니다.
+- **작업:** 공급자·endpoint·오류 signature별 근거와 약관 허용을 확인한 뒤 ADR 0005의 게이트·예산 조건으로 검토합니다.
+- **완료 기준:** 중복 실행·과금이 없다는 근거가 문서화된 signature만 허용하고 격리 테스트·독립 리뷰를 통과합니다.
+
+### [ ] 인증·종료 테스트 보강 (리뷰 Low/Medium 잔여)
+- **관련 Phase:** 4, 6 — 2026-11-09 독립 리뷰 `deleg_9fe283df`(A/B/C 모두 PASS)의 비차단 지적
+- **위치:** `tests/all-route-auth-synthetic.test.mjs`, `tests/server-quarantined-writer-shutdown.test.mjs`, `tests/siwc-callback-drain.test.mjs`
+- **현재 상태:** 인증 테스트는 admin·SIWC·v1 라우터만 검사하고 `server.ts`의 app 수준 mount·앞단 미들웨어는 열거하지 않습니다. admin 양성 대조, 전 경로 OPTIONS·`isAccepting()=false` 503, `setHeader`/`end` 감시가 없습니다. 종료 테스트는 `requestWork`·expiry drain의 실패·hang을 기록하지 않습니다. SIWC 실제 서버 테스트는 listen 동기 throw만 다루고 비동기 `'error'` 경로는 fake로만 검증합니다. 비활성 사용자 제외는 저장소 계층 테스트로 옮겨야 합니다. `stopSiwc` 실패 후 `stopping=true` 유지 시 재시작 의미가 문서화되지 않았습니다.
+- **완료 기준:** app.stack 열거 테스트, 위 사례의 회귀 테스트 추가 및 ADR 0009에 SIWC 중단 후 상태 명시.
+
+### [ ] 라우터 중단 전환 판정 보강
+- **관련 Phase:** 4 — [ADR 0008](./docs/adr/0008-new-request-account-429-policy.md) 2026-11-09 개정
+- **위치:** `src/upstream/forward-chat.ts` 바깥 catch, `src/upstream/inference.ts` `readWithAbort`
+- **현재 상태:** 라우터 자체 중단 여부를 catch 진입 시점의 `signal.aborted`로 판정합니다. 공급자 실패가 매크로태스크 경계를 거쳐 전파되는 좁은 경로에서는 무기한 OPEN 대상이 60초 제한으로 바뀔 수 있습니다(비차단, 오판 방향은 완화 쪽). `terminalObserved` 가드, 401 재시도 중 중단, dispatch 전 중단은 직접 테스트가 없습니다.
+- **완료 기준:** 중단 오류에 출처 표식을 달아 판정하고, 판정 로직 단위 테스트와 `BEFORE DELETE ... RAISE` 트리거 기반 settle 실패 주입 테스트를 추가합니다.
+
+### [ ] 추론 시간 제한 보강
+- **관련 Phase:** 4 — [ADR 0016](./docs/adr/0016-phase4-scope-freeze.md) 항목 3
+- **위치:** `src/upstream/forward-chat.ts` `INFERENCE_TIMEOUTS`, watchdog
+- **현재 상태:** 값은 export된 가변 상수(테스트 seam)입니다. `touch()`는 걸려 있는 단계를 구분하지 않습니다(실제 경로는 확인되지 않음). 비-ok 응답 뒤 재설정 시점이 일반(settle 후)과 SIWC(settle 전)에서 다릅니다. 느린 클라이언트로 drain이 무응답 제한을 넘으면 라우터 중단으로 처리되어 공급자 계정이 60초 제한을 받습니다(구 120초 정책과 같은 성격, ADR 0008 귀속 규칙 사안). 디스패치 전 승인 대기 제한과 쓰기 후 재설정은 직접 테스트가 없습니다. 실제 공급자의 heartbeat 간격과 추론 무음 시간은 미검증입니다.
+- **완료 기준:** 운영자 설정화와 운영 값 freeze, 단계 세대 토큰, SIWC 승인 지연 테스트, 소비자 정체와 공급자 무음의 귀속 구분. `TransformStream`을 `node:stream/web`에서 명시적으로 import하고 `package.json` `engines`(현재 없음)에 Node 버전 하한 명시. 테스트 헬퍼 `tests/helpers/fresh-db.mjs`를 `.ts`로 옮기거나 테스트용 tsconfig로 타입 검사(현재 `src/upstream/*.test.ts`는 비리터럴 URL import로 rootDir 밖 헬퍼를 불러 타입 검사에서 빠짐).
+
+### [ ] 종료 시 DB 정상 close의 전역 증명 (Phase 6으로 이연)
+- **관련 Phase:** 6 — 운영 ([ADR 0016](./docs/adr/0016-phase4-scope-freeze.md))
+- **위치:** `src/server.ts`, [ADR 0009](./docs/adr/0009-shutdown-deadline-database.md)
+- **현재 상태:** 등록된 작업 drain 후에도 DB를 명시적으로 닫지 않고 5초 기한에 실패 종료합니다. 모든 DB 생산자의 추적은 증명되지 않았습니다.
+- **작업:** 모든 생산자의 소유권 증명 후 정상 close·WAL checkpoint를 검토합니다.
+- **완료 기준:** 실제 SQLite·소켓 환경에서 추적 누락 없이 drain 후 close되는지 검증합니다.
+
+### [ ] 업스트림 미발송 실패 시 사용자 할당량 정책 검토
+- **관련 Phase:** 4, 6 — 라우팅·사용자 통계
+- **위치:** `src/auth/user-auth.ts`, `src/db/repositories/users.ts`, `src/upstream/forward-chat.ts`
+- **현재 상태:** 사용자 할당량은 요청 접수 시 UTC 기준으로 예약하며 실패·취소에도 환불하지 않습니다. 모든 계정이 쿨다운 중인 503처럼 업스트림 호출이 없는 요청도 차감되어, 장애 중 반복 요청이 사용자의 한도를 소진할 수 있습니다.
+- **작업:** 사전 발송 실패의 예외 여부와 운영자 표시·클라이언트 backoff를 검토합니다. 무조건적인 환불이나 인증 우회로 동시 요청의 한도 집행을 약화하지 않습니다.
+- **완료 기준:** 선택한 정책의 경쟁 조건·실패·취소를 격리 테스트하고 사용자에게 할당량과 실제 추론 횟수 차이를 명확히 표시합니다.
+
 ### [ ] 추론 요청 및 스트림 정지 시간 제한
 - **관련 Phase:** 5 — 클라이언트 호환
 - **위치:** `src/upstream/inference.ts`, `src/upstream/forward-chat.ts`
@@ -36,11 +75,30 @@ Phase 1 코드 리뷰·테스트 과정에서 확인했지만 해당 단계의 �
 ### [ ] 429/5xx 계정 자동 전환
 - **관련 Phase:** 4 — 라우팅과 자동 전환
 - **위치:** `src/upstream/forward-chat.ts`, `src/account-pool/manager.ts`
-- **현재 상태:** 이전 확인 시 요청 경로의 다른 계정으로의 자동 전환은 적용되지 않았습니다. 실제 다중 계정 전환은 검증되지 않았습니다.
-- **작업:** 실패 계정 제외, 적절한 쿨다운 및 다른 후보 재시도를 구현합니다. 클라이언트에 응답이 시작된 후에는 중복 출력을 방지합니다.
-- **완료 기준:** 격리된 다중 계정 테스트에서 429/5xx 전환과 후보 소진, 스트리밍 시작 전후의 오류 처리를 확인합니다.
+- **현재 상태:** 단조 관찰 기반 429 제한을 작업본의 선택·발송 및 일부 응답 처리에 연결했고 일반 계정의 인증 경로에서 합성 시계 변경과 관찰자 재생성 사례를 격리 테스트했습니다. SIWC 전체 경로와 실제 파일·프로세스 재시작은 미검증입니다. 이미 발송된 같은 요청의 429/5xx 재전송은 구현되지 않았고 확인된 5xx의 쿨다운은 프로세스 로컬입니다. 전체 테스트와 실제 제공자 검증은 미완료입니다.
+- **작업:** 사용자가 선택한 새 요청의 대체 계정 선택 정책을 유지하면서 5xx 공유 제한, 시계 변경과 불확정 OPEN의 안전한 복구를 완성합니다. 제공자의 실제 제한 범위와 약관상 허용은 별도 확인이 필요하며, 사용자 선택을 허용 증거로 취급하지 않습니다. 동일 요청 재발송은 별도 정책과 안전 근거가 필요합니다.
+- **완료 기준:** 허용된 오류 유형별 전환과 후보 소진, 후속 요청 및 스트리밍 시작 전후 오류 처리를 격리 테스트하고 적용한 정책 근거를 기록합니다.
+
+### [ ] 계정 일일 할당량 원자 집행 및 날짜 초기화
+- **관련 Phase:** 4 — 라우팅과 자동 전환
+- **위치:** `src/account-pool/manager.ts`, `src/db/repositories/accounts.ts`
+- **현재 상태:** 독립 정적 리뷰에서 완료된 요청 수만으로 후보를 필터링해 동시 요청이 계정 한도를 초과할 수 있고 일일 초기화 호출이 없다고 지적했습니다. 해당 리뷰에서는 실행 재현하지 않았습니다.
+- **완료 기준:** 격리 DB 및 다중 프로세스에서 동시 요청, 날짜 경계·재시작, 실패·중단과 기존 데이터 보존을 검증합니다.
+
+### [ ] 사용자 quota와 관리 화면 사용량의 집계 기준 명확화
+- **관련 Phase:** 4, 6 — 라우팅·운영 통계
+- **위치:** `src/auth/user-auth.ts`, `src/db/repositories/usage-logs.ts`, `src/upstream/forward-chat.ts`
+- **현재 상태:** Phase 3 리뷰에서 quota 예약량과 사용량 로그 집계가 실패·usage 누락·시간대에 따라 다를 수 있다고 지적했으며, 담당 에이전트가 차이를 재현했습니다.
+- **완료 기준:** 예약·추론 시도·성공·토큰 사용량을 구분해 정의하고 일관된 시간대와 화면 표기를 테스트합니다.
 
 ## 운영·검증
+
+### [ ] 사용 이력 대량 조회 성능 개선
+- **관련 Phase:** 4, 6 — 라우팅·운영 통계
+- **위치:** `src/db/repositories/usage-logs.ts`, `src/account-pool/manager.ts`, `docs/global-usage-index.md`
+- **현재 상태:** UTC 오늘 통계는 범위를 사전 필터링하지만 전역 timestamp 선행 인덱스는 자동 생성하지 않습니다. 이력 페이지는 엄격한 날짜 파싱을 사용해 많은 일치 행을 정렬할 수 있습니다. 합성 10만 행 쿼리 측정은 운영 지연의 증거가 아닙니다.
+- **작업:** 인덱스 또는 정규화 컬럼을 검토하되 기존 데이터 보존, 엄격한 날짜 해석, 페이지 순서, 오프라인 전환·기존 업그레이더 스키마 호환을 검증합니다. 운영 DB에 자동 적용하지 않습니다.
+- **완료 기준:** 격리 DB에서 인덱스 유무 결과 일치, 실행 계획, 쓰기 비용 및 페이지 경계를 검증하고 별도 리뷰를 받습니다.
 
 ### [ ] 헬스체크와 의존성 준비 상태 분리
 - **관련 Phase:** 6 — 운영 및 모니터링
@@ -61,3 +119,87 @@ Phase 1 코드 리뷰·테스트 과정에서 확인했지만 해당 단계의 �
 - **현재 상태:** Windows 테스트는 실제 OS 종료 신호 전달 대신 자식 프로세스 내부의 신호 이벤트를 사용한 것으로 보고됐습니다. 마지막 JWT 리뷰에서는 동시 일반 요청의 단일 refresh와 `exp == now` 경계를 직접 확인하는 테스트가 보강 가능하다고 했습니다.
 - **작업:** 실제 OS 신호 전달을 안전하게 검증할 수 있는 격리 테스트와 JWT 경계·동시 요청 테스트를 추가합니다.
 - **완료 기준:** 테스트가 실제 종료 전달 및 경계 동작을 검증하고, 사용자 프로세스·운영 DB에는 영향을 주지 않습니다.
+
+## 429 v2 테스트 기대값 리뷰 잔여 (2026-11-10, deleg_b12409ce)
+
+비차단 지적. 7번(arm 실패 주입)은 반영 완료(`phase4-ordinary-open-safety`, 변형 검출 확인).
+
+- **레거시 쿨다운 → v2 변환 없음 (마이그레이션 차단 항목):** 업그레이드 시점에 `account_429_cooldowns`에 남은 미만료 쿨다운은 v2로 옮겨지지 않아 즉시 선택 가능해진다. 오프라인 마이그레이션(ADR 0008, 현재 명령 비활성)에서 변환하거나 폐기를 ADR에 명시할 것.
+- 운영 경로 전반에서 레거시 테이블 쓰기 0건을 단언하는 회귀 테스트 1개; `client.ts`의 레거시 스키마 생성·검증 정리.
+- v2 만료 서비스를 가짜 단조 시계로 실제 호출하는 SIWC 경로 테스트(현재 `siwc-cooldown-http`는 DELETE로 만료를 대신함).
+- v2 스키마 위반 시 스냅샷 `unknown` + 선택 차단(fail-closed) 단언, 비정상 `duration_ms` 처리 단언.
+- 앵커 있는 **과거** HTTP-date Retry-After가 null(무기한)이 되는 것이 의도인지 결정; `Retry-After 120` 상한 단언.
+- `siwc-refresh-admission` 워커: 장벽 발동 1회·갱신 토큰 확인 단언, 갱신 전 게이트에서 arm하는 별도 사례.
+- `quota-reselection-provenance` VM 스텁: 레거시 쿼리는 빈 결과로 바꾸고 v2 쿼리에서만 차단.
+- SIWC transport 실패(502) 사례: 다음 요청 503(OPEN), Retry-After 미전송 단언.
+
+## 테스트 복구 2차 리뷰 잔여 (2026-11-10, deleg_b49e1a77)
+
+반영 완료: E(ADR 0017 기록, 라우트 수준 멈춘 취소 사례 추가), A(`usage` 키 유무로 분기하는 소비자 없음 확인, `if (e.usage)`만 사용), B(유효 행 누적 합 초과 사례), G(해당 계정의 5xx 제한 존재를 확인한 뒤 그 계정 행만 삭제).
+
+비차단 잔여:
+- B 음성 대조를 user/account 집계별 단일 변형으로 분리; API 문서에 `totalTokens`=확인분 합(불완전 시 하한) 명시.
+- C `siwc-fence-abort-contention`: 응답 상태·lock 해제(후속 요청 진행) 단언, "발송 후 취소 → aborted=1" 양성 대조 존재 확인.
+- D 잘린 스트림 테스트에 같은 픽스처 완전판 성공 쌍 대조, 502·비브랜드 단언.
+- F 동기 시작 실패가 로컬 SIWC 백오프를 건다는 사실을 해당 사례에서 직접 단언.
+- G "제한 중 두 번째 실행은 발송 없이 503" 동작을 별도 사례로 고정; 레거시 쿨다운 행 무시 사례 별도 유지 여부 결정.
+- H `adaptLegacySelect` 경로에서 스텁 호출 횟수 단언; 장기적으로 테스트가 `selectCandidate`를 직접 스텁하도록 이전.
+- I 발송 시점 자격·revision이 변경 전 값이고 관리자 변경은 그 뒤 커밋됐다는 순서 단언.
+- J 카운터 최댓값 상태 격리(finally 복원 외), 이후 요청에서 해당 계정 미선택 단언.
+- K done 시점 `fetchCalls ≥ 1`, `terminal()` 정확히 1회 단언.
+- ADR 0017 한계: 멈춘 취소의 소켓 회수(장시간·대량) 미검증.
+
+## 기존 DB 업그레이드 경로 (ADR 0018, 2026-11-10)
+
+Phase 4는 안전 스키마(429 v2, OPEN 표식)가 없는 기존 DB를 거부만 한다. 기존 DB를 계속 쓰려면 아래가 필요하다.
+- 꺼져 있는 업그레이드 스크립트(`scripts/offline-429-upgrade.mjs`, `scripts/offline-open-upgrade.mjs`)를 v2 스키마와 `db:init` 방식에 맞춰 갱신. 업그레이드된 DB가 현재 `initDatabase`를 통과해야 함.
+- 레거시 `account_429_cooldowns`의 미만료 쿨다운을 v2 제한으로 변환(1차 리뷰 6번 지적).
+- 보류된 사례 13개 재활성화(마커 손상 거부 분리본 포함): `credential-revision-migration`, `state-revision-migration`(2), `siwc-acl-migration`, `siwc-routing-migration`, `phase2-quota-offline-cutover`, `migration-concurrent-regression`, `phase4-offline-open-upgrade`(5). 사유 상수는 `tests/helpers/upgrade-deferred.mjs`. 이 중 앞 세 파일 일부와 뒤 두 파일은 Windows EPERM도 겹쳐 있어 재활성화 시 별도 확인 필요.
+- 스크립트 활성화(`OPERATIONALLY_ENABLED`)는 ADR 0013에 따라 별도 승인 필요.
+- ADR 0018 리뷰(deleg_2c1c4d8d) 비차단 잔여: 프로비저닝 실패 시 파일 정리 경로 테스트(장애 주입), `db:init`이 실패해도 만든 상위 폴더는 남음, env.ts 단계에서 메모리·`file:` 경로 조기 거부 검토, skip된 업그레이드 성공 사례마다 "현재 클라이언트가 v2 없는 업그레이드 결과물을 변경 없이 거부" 대체 단언.
+- 업그레이더 거부 테스트의 대조군 부재(재리뷰 deleg_e6dcab07): 현재 `offline-open-upgrade.mjs`는 손상되지 않은 v2 기준 DB도 같은 일반 메시지로 거부한다. 그래서 `phase4-offline-open-upgrade`의 마커 손상 거부 사례(분리본 포함)는 보류했다. 업그레이드 경로를 고칠 때 "손상 없는 사본은 성공" 대조군과 사례별 거부 사유를 함께 넣어 재활성화한다. 강제 종료로 커밋 전 0바이트 파일이 남은 경우 `db:migrate` 동작도 장애 주입 테스트로 확인한다.
+- async-writer 메모리 분기 정리(재리뷰 deleg_69301280 S1): 운영에서 도달할 수 없는 `shared.name === ':memory:'` 분기를 제거하거나 불변식으로 throw하게 바꾼다. `db-lifecycle-reentrancy-memory`의 가짜 핸들을 임시 파일 기반으로 바꿔 이름이 설정 경로와 같게 하고, 모든 모드가 별도 writer 연결 경로(운영 경로)를 타게 한다. 그 전까지 해당 테스트의 `:memory:` 모드는 운영 writer를 검증하지 않는다.
+
+
+## 종료 drain 리뷰 잔여 (2026-11-10, deleg_385d22f7)
+
+비차단 지적 N2~N12. 상세는 `docs/db-producer-inventory.md` '남은 일'에 있다.
+- `initDatabase` 종료 후 재초기화 거부 테스트
+- 만료 스케줄러 `lockedNow` 비교 정리(도달 불가)
+- 가짜 writer, 가짜 transaction, 가짜 safeIntegers 계약 보강
+- 고정 대기 제거, keep-alive 503 사례
+- (우선, deleg_c917dad4 N-c) keep-alive 유휴 연결 때문에 정상 종료가 5초 제한에 걸려 종료 코드 1이 될 수 있음. `closeIdleConnections()`와 drain 중 `Connection: close` 적용 및 테스트
+- `phase1-server` 추적 라우트를 실제 `trackedRoute`로 교체, 'stalled token exchange' 불안정성 확인
+
+
+## Phase 4 보류 테스트 → Phase 6 테스트 정리 (2026-11-10, 사용자 승인)
+
+최종 확인은 run11이다. 264개 중 238개 통과, 새 실패 0개, 아래 26개 보류.
+**E 묶음은 다음 Phase 시작 전에 가장 먼저 확인한다.** keep-alive 종료 지연(위 '종료 drain 리뷰 잔여')도 우선순위가 높다.
+
+run10: 264개 파일 중 235개 통과. run9(228) 대비 새로 실패한 파일 0개. phase4-siwc-vertical은 run5에서도 같은 barrier timeout으로 실패했고, 단독 9회 중 1회 실패했다(간헐).
+run10 이후 고친 것: admin-account-routing-validation 2/2(가짜 requestWork에 ownedDispatch 추가), phase4-siwc-reusable-gate 1/1(DATABASE_URL 합성 값).
+보류 후보: 26개.
+
+## A. 요청 처리·Express 연속성 이전 명세 (10)
+request-work-capability, request-work-express4(timeout), request-work-lifecycle, request-work-ownership-regression(timeout), request-lease-express-red, controlled-ingress, controlled-ingress-errors, express-error-work(timeout), v1-local-error-terminal, application-shutdown-auth-continuation
+사유: ADR 0009/0010 이후 설계(오류 원본 비노출, 종료 후 자식 작업 승인 차단)와 충돌하는 기대가 섞여 있다. 사례별로 현재 계약으로 옮겨야 한다. application-shutdown은 env 의존성을 넣자 timeout으로 바뀌어 되돌렸다.
+
+## B. 실험 코드 (6)
+experimental-429-coordinator(존재하지 않는 모듈을 기다리는 RED 테스트), experimental-429-scheduler-contention, experimental-429-scheduler-integration, experimental-atomic-429-app, experimental-atomic-429-settle-process, experimental-atomic-429-settle-rollback
+사유: 운영 경로에서 쓰지 않는 실험 모듈이다.
+
+## C. 가짜 better-sqlite3로 client.ts를 불러오는 테스트 (2)
+ordinary-conflict-sqlite(21개 실패), sqlite-lifecycle-races(7개 실패)
+사유: client.ts의 fileMustExist, 메모리 DB 거부(ADR 0018) 이후 가짜 DB 계약이 맞지 않는다.
+
+## D. 레거시·업그레이드 경로 (3)
+phase2-repository(레거시 재구성), real-app-429-compatibility(레거시 계획을 v2 저장소가 거부), phase2-quota-process(Windows EPERM, 레거시 UTC)
+사유: ADR 0018에서 기존 DB 업그레이드를 보류했다.
+
+## E. 운영 안전 속성 가능성 — 보류하되 우선 확인 표시 (5)
+oauth-refresh-http-cancel(timeout), oauth-refresh-intent-boundary('unknown commit outcome remains fenced…'), phase2-quota-http(timeout), phase4-least-used-utc-http(테스트 하네스 자식 정리), phase4-ledger-quota-atomic('fails closed when commit is applied but its acknowledgement is lost')
+사유: 실패 메시지는 결함 주입 지점에 도달하지 못했다는 내용이다. 테스트 하네스 문제로 추정하지만 확인하지 않았다. 커밋 결과 불명 시 fail-closed 속성이라 다음 Phase 시작 전에 먼저 본다.
+
+## 간헐 (1)
+phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. 부하 시 실패.

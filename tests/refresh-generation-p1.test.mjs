@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import {responseStream, responseStreamWithUsage} from './phase4-protocol-fixtures.mjs';
 Object.assign(process.env, {NODE_ENV:'test',DATABASE_URL:'sqlite::memory:',ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_PRETTY:'false'});
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const {AccountRepository}=await import('../src/db/repositories/accounts.ts');
 const {accountPool}=await import('../src/account-pool/manager.ts');
+(await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
 const {forwardChat}=await import('../src/upstream/forward-chat.ts');
 const {resolveAuth}=await import('../src/upstream/tokens.ts');
 const repo=new AccountRepository();
@@ -19,7 +22,7 @@ test('non-credential admin update during 401 still refreshes rejected credential
     globalThis.fetch=async(url,opts)=>{
       if(String(url).includes('oauth/token')) {calls.push('refresh'); return new Response(JSON.stringify({access_token:'new-access',refresh_token:'new-refresh',expires_in:3600}));}
       calls.push(opts.headers.authorization);
-      if(calls.length===1) repo.update(a.id,{lastError:'admin note'});
+      if(calls.length===1) {await new Promise(r=>setImmediate(r)); /* let the dispatch fence commit before the concurrent admin write */ repo.update(a.id,{lastError:'admin note'});}
       return new Response('',{status:401});
     };
     const res=response(); await forwardChat(request(),res);
@@ -42,7 +45,7 @@ test('replacement generation refresh is independent and old failure cannot cool 
         if(body.includes('old-refresh-parallel')) {signalOld(); await oldGate; return new Response('',{status:500});}
         signalNew(); return new Response(JSON.stringify({access_token:'rotated-access',refresh_token:'rotated-refresh',expires_in:3600}));
       }
-      if(opts.headers.authorization==='Bearer rotated-access') return new Response('data: {"type":"response.completed","response":{"id":"r"}}\n\n',{headers:{'content-type':'text/event-stream'}});
+      if(opts.headers.authorization==='Bearer rotated-access') return new Response(responseStream,{headers:{'content-type':'text/event-stream'}});
       return new Response('',{status:401});
     };
     const oldRes=response(), oldRequest=forwardChat(request(),oldRes); await oldStarted;

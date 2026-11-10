@@ -6,6 +6,9 @@ import { UserRepository } from '../db/repositories/users.js';
 import { hashApiKey } from '../utils/encryption.js';
 import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
+import { withAsyncWriter } from '../db/async-writer.js';
+import { requestWork } from '../request-work.js';
+import type { OwnedDispatch } from '../request-work.js';
 
 const userRepo = new UserRepository();
 
@@ -29,16 +32,57 @@ declare global {
 /**
  * API 키 기반 사용자 인증
  */
-export function authenticateUser(req: Request, res: Response, next: NextFunction): void {
-  authenticate(req, res, next, true);
+export function authenticateUser(req: Request, res: Response, next: NextFunction): Promise<void> {
+  return trackedAuthenticate(req, res, next, true);
 }
 
 /** Authenticate read-only routes without reserving an inference request. */
-export function authenticateUserWithoutQuota(req: Request, res: Response, next: NextFunction): void {
-  authenticate(req, res, next, false);
+export function authenticateUserWithoutQuota(req: Request, res: Response, next: NextFunction): Promise<void> {
+  return trackedAuthenticate(req, res, next, false);
 }
 
-function authenticate(req: Request, res: Response, next: NextFunction, reserveQuota: boolean): void {
+/** The caller owns this entire promise, including the authenticated handler. */
+export function authenticateUserInDispatch(req: Request, res: Response, handler: () => unknown, reserveQuota: boolean): Promise<void> {
+  return authenticate(req, res, handler, reserveQuota);
+}
+
+function trackedAuthenticate(req: Request, res: Response, next: NextFunction, reserveQuota: boolean, scope?: OwnedDispatch): Promise<void> {
+  let forwarded = false;
+  const fallback = () => {
+    try { logger.error('Authentication continuation failed'); } catch { /* best effort */ }
+    try {
+      if (res.destroyed || res.writableEnded) return;
+      if (res.headersSent) res.destroy();
+      else res.status(500).json({ error: { type: 'internal_error', message: 'Internal server error.' } });
+    } catch { try { res.destroy(); } catch { /* best effort */ } }
+  };
+  const report = async (error: unknown) => {
+    if (!forwarded) {
+      forwarded = true;
+      try { if (scope) next(new Error('Internal server error.')); else requestWork.handoff(req, () => next(new Error('Internal server error.'))); return; } catch { /* do not invoke next twice */ }
+    }
+    fallback();
+  };
+  const run = scope ? scope.run : requestWork.run.bind(requestWork);
+  const work = run(async () => {
+    try {
+      await authenticate(req, res, () => {
+        forwarded = true;
+        return scope ? next() : requestWork.handoff(req, () => next());
+      }, reserveQuota);
+    } catch (error) { await report(error); }
+    finally { if (scope && !forwarded) scope.terminal(); }
+  });
+  if (!work) {
+    return (async () => {
+      try { res.status(503).json({ error: { type: 'service_unavailable', message: 'Server is shutting down.' } }); }
+      catch (error) { await report(error); }
+    })();
+  }
+  return work;
+}
+
+async function authenticate(req: Request, res: Response, next: () => unknown, reserveQuota: boolean): Promise<void> {
   // Authorization 헤더 또는 x-api-key 헤더에서 키 추출
   let apiKey: string | undefined;
   
@@ -61,20 +105,20 @@ function authenticate(req: Request, res: Response, next: NextFunction, reserveQu
 
   // API 키 해시 후 DB 조회
   const keyHash = hashApiKey(apiKey);
-  let reservation: ReturnType<UserRepository['reserveDailyQuota']> | undefined;
-  let user: ReturnType<UserRepository['findByApiKeyHash']>;
-  try {
-    if (reserveQuota) {
-      reservation = userRepo.reserveDailyQuota(keyHash);
-      user = reservation.user;
-    } else {
-      user = userRepo.findByApiKeyHash(keyHash);
-    }
-  } catch (error) {
-    logger.error({ error }, reserveQuota ? 'User quota reservation failed' : 'User authentication lookup failed');
+  const controller = new AbortController();
+  const onClose = () => { if (!res.writableEnded) controller.abort(); };
+  res.on?.('close', onClose);
+  if (res.destroyed && !res.writableEnded) controller.abort();
+  const cleanup = () => res.off?.('close', onClose);
+  const fail = (error: unknown) => {
+    cleanup();
+    if (controller.signal.aborted) return;
+    logger.error(reserveQuota ? 'User quota reservation failed' : 'User authentication lookup failed');
     res.status(503).json({ error: { type: 'service_unavailable', message: reserveQuota ? 'Unable to reserve daily quota.' : 'Unable to authenticate user.' } });
-    return;
-  }
+  };
+  const finish = (reservation: ReturnType<UserRepository['reserveDailyQuota']> | undefined, user: ReturnType<UserRepository['findByApiKeyHash']>) => {
+  cleanup();
+  if (controller.signal.aborted) return;
 
   if (!user) {
     logger.warn('Invalid API key');
@@ -110,7 +154,19 @@ function authenticate(req: Request, res: Response, next: NextFunction, reserveQu
   };
 
   logger.debug({ userId: user.id, email: user.email }, 'User authenticated');
-  next();
+  return next();
+  };
+  let reservation: ReturnType<UserRepository['reserveDailyQuota']> | undefined;
+  let user: ReturnType<UserRepository['findByApiKeyHash']>;
+  try {
+    if (!reserveQuota) user = userRepo.findByApiKeyHash(keyHash);
+    else {
+      const result = withAsyncWriter(db => userRepo.reserveDailyQuota(keyHash, undefined, db), {signal: controller.signal});
+      reservation = result instanceof Promise ? await result : result;
+      user = reservation.user;
+    }
+  } catch (error) { fail(error); return; }
+  await finish(reservation, user);
 }
 
 /**

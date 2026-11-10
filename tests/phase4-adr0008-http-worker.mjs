@@ -1,0 +1,12 @@
+import express from 'express';
+import {once} from 'node:events';
+const [file,providerPort]=process.argv.slice(2);
+Object.assign(process.env,{NODE_ENV:'test',DATABASE_URL:`sqlite:${file}`,ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_LEVEL:'error',LOG_PRETTY:'false'});
+const nativeFetch=globalThis.fetch;
+globalThis.fetch=(url,options)=>nativeFetch(`http://127.0.0.1:${providerPort}/inference`,options);
+const router=(await import('../src/routes/v1.ts')).default;
+const app=express();app.use(express.json());app.use('/v1',router);
+const server=app.listen(0,'127.0.0.1');await once(server,'listening');
+if(server.address().port===20128) throw new Error('reserved port');
+process.send({port:server.address().port});
+process.on('message',message=>{if(message==='stop') server.close(()=>process.exit(0));});

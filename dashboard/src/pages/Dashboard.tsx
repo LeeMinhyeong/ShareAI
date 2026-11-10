@@ -1,6 +1,7 @@
-import { Users, CreditCard, CheckCircle, XCircle } from 'lucide-react'
+import { Users, CreditCard, CheckCircle } from 'lucide-react'
 
 interface Stats {
+  todayUsage: { totalRequests: number; successRequests: number }
   users: { total: number; enabled: number; free: number; pro: number }
   accounts: { total: number; byProvider: Record<string, number>; byStatus: Record<string, number> }
 }
@@ -10,7 +11,7 @@ export default function Dashboard({ stats }: { stats: Stats | null }) {
     return <div className="loading">데이터를 불러오는 중...</div>
   }
 
-  const { users, accounts } = stats
+  const { users, accounts, todayUsage } = stats
   
   return (
     <>
@@ -19,6 +20,11 @@ export default function Dashboard({ stats }: { stats: Stats | null }) {
       </div>
 
       <div className="stats-grid">
+        <div className="card">
+          <div className="stat-value">{todayUsage.totalRequests}</div>
+          <div className="stat-label">오늘 기록된 요청 (UTC), 성공 {todayUsage.successRequests}</div>
+          <small>실패 포함 · 기록은 최선 노력이며 전체 요청을 보장하지 않음</small>
+        </div>
         <div className="card">
           <div className="stat-card">
             <div className="stat-icon blue">

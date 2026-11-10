@@ -1,6 +1,7 @@
 /**
  * 업스트림 계정 Repository
  */
+import type { Database } from 'better-sqlite3';
 import { getDb } from '../client.js';
 import type { UpstreamAccount, AccountMeta, QuotaInfo, CredentialType } from '../schema.js';
 import { createHash, randomUUID } from 'crypto';
@@ -8,7 +9,7 @@ import { parseStoredCredentials } from '../../upstream/oauth.js';
 import { CredentialVault } from '../../utils/encryption.js';
 
 const vault = new CredentialVault();
-const refreshFingerprint = (provider: string, token: string) => createHash('sha256').update(JSON.stringify([provider, token])).digest('hex');
+export const refreshFingerprint = (provider: string, token: string) => createHash('sha256').update(JSON.stringify([provider, token])).digest('hex');
 type AdminAccount = Omit<UpstreamAccount, 'credentials' | 'meta' | 'quotaInfo'> & { credentialStatus: 'available' | 'unavailable' };
 
 function parseJson<T>(text: string | null | undefined, fallback: T): T {
@@ -26,11 +27,10 @@ export class RefreshIntentError extends Error {
 
 export class AccountRepository {
   /** Reserve this provider/token forever before sending it to the provider. */
-  claimRefresh(id: string, expected: string): { account: UpstreamAccount; credentialVersion: string; attemptId: string; fingerprint: string } {
-    const db = getDb();
+  claimRefresh(id: string, expected: string, db: Database = getDb(), expectedRevision?: number): { account: UpstreamAccount; credentialVersion: string; attemptId: string; fingerprint: string } {
     return db.transaction(() => {
-      const account = this.findById(id);
-      if (!account || account.credentialType !== 'oauth' || account.credentials !== expected || !['active', 'quota_exceeded'].includes(account.status))
+      const account = this.findById(id, db);
+      if (!account || account.credentialType !== 'oauth' || account.credentials !== expected || (expectedRevision !== undefined && account.credentialRevision !== expectedRevision) || !['active', 'quota_exceeded'].includes(account.status))
         throw new Error('Account unavailable for refresh');
       const token = parseStoredCredentials(account.credentials)?.refreshToken;
       if (!token) throw new Error('Account has no refresh token');
@@ -44,28 +44,34 @@ export class AccountRepository {
     }).immediate();
   }
 
-  finishRefresh(id: string, credentialVersion: string, credentialRevision: number, fingerprint: string, attemptId: string, credentials: string, meta: AccountMeta): UpstreamAccount | null {
-    const db = getDb();
+  /** Release only this known-unused claim while its exact credential generation remains current. */
+  releaseUnusedRefresh(id: string, credentialVersion: string, credentialRevision: number, fingerprint: string, attemptId: string, db: Database): void {
+    db.prepare(`DELETE FROM oauth_refresh_intents WHERE token_fingerprint = ? AND attempt_id = ? AND account_id = ?
+      AND EXISTS (SELECT 1 FROM upstream_accounts WHERE id = ? AND credential_type = 'oauth' AND credentials = ? AND credential_revision = ?)`)
+      .run(fingerprint, attemptId, id, id, credentialVersion, credentialRevision);
+  }
+
+  finishRefresh(id: string, credentialVersion: string, credentialRevision: number, fingerprint: string, attemptId: string, credentials: string, meta: AccountMeta, db: Database = getDb()): UpstreamAccount | null {
     return db.transaction(() => {
       const intent = db.prepare('SELECT 1 FROM oauth_refresh_intents WHERE token_fingerprint = ? AND attempt_id = ? AND account_id = ?').get(fingerprint, attemptId, id);
-      const current = this.findById(id);
+      const current = this.findById(id, db);
       const row = db.prepare('SELECT credentials FROM upstream_accounts WHERE id = ?').get(id) as { credentials: string } | undefined;
       if (!intent || !current || current.credentialType !== 'oauth' || current.credentialRevision !== credentialRevision || row?.credentials !== credentialVersion) throw new Error('Account credentials changed during refresh');
       db.prepare('UPDATE upstream_accounts SET credentials = ?, meta = ?, updated_at = ?, state_revision = state_revision + 1, last_refresh_revision = credential_revision + 1 WHERE id = ?')
         .run(vault.encrypt(credentials), JSON.stringify({ ...current.meta, ...meta }), new Date().toISOString(), id);
-      return current.status === 'active' || current.status === 'quota_exceeded' ? this.findById(id) : null;
+      return current.status === 'active' || current.status === 'quota_exceeded' ? this.findById(id, db) : null;
     }).immediate();
   }
   hasRefreshIntent(provider: string, token: string): boolean {
     return !!getDb().prepare('SELECT 1 FROM oauth_refresh_intents WHERE token_fingerprint = ?').get(refreshFingerprint(provider, token));
   }
-  markRefreshError(id: string, credentialVersion: string, observed: UpstreamAccount): void {
-    getDb().prepare(`UPDATE upstream_accounts SET status = 'error', last_error = ?, updated_at = ?, request_revision = request_revision + 1
+  markRefreshError(id: string, credentialVersion: string, observed: UpstreamAccount, db: Database = getDb()): void {
+    db.prepare(`UPDATE upstream_accounts SET status = 'error', last_error = ?, updated_at = ?, request_revision = request_revision + 1
       WHERE id = ? AND credential_type = 'oauth' AND credentials = ? AND state_revision = ? AND status IN ('active', 'quota_exceeded')`)
       .run('재로그인 필요: 토큰 갱신 결과 불확정', new Date().toISOString(), id, credentialVersion, observed.stateRevision);
   }
-  findById(id: string): UpstreamAccount | null {
-    const row = getDb().prepare('SELECT * FROM upstream_accounts WHERE id = ?').get(id);
+  findById(id: string, db: Database = getDb()): UpstreamAccount | null {
+    const row = db.prepare('SELECT * FROM upstream_accounts WHERE id = ?').get(id);
     return row ? this.rowToAccount(row) : null;
   }
 
@@ -186,11 +192,10 @@ export class AccountRepository {
   }
 
   /** 성공 사용 기록. quota_exceeded 상태였다면 active 로 복귀 */
-  markUsed(id: string, observed?: UpstreamAccount, usedToken?: string, countUsage = true): boolean {
+  markUsed(id: string, observed?: UpstreamAccount, usedToken?: string, countUsage = true, db: Database = getDb()): boolean {
     const now = new Date().toISOString();
-    const db = getDb();
     return db.transaction(() => {
-      const current = this.findById(id);
+      const current = this.findById(id, db);
       if (countUsage && current) db.prepare('UPDATE upstream_accounts SET last_used = ?, used_today = used_today + 1, updated_at = ? WHERE id = ?').run(now, now, id);
       if (!current || !['active', 'quota_exceeded'].includes(current.status) || (observed && (current.stateRevision !== observed.stateRevision || (usedToken === undefined ? current.credentials !== observed.credentials : (parseStoredCredentials(current.credentials)?.accessToken ?? current.credentials) !== usedToken)))) return false;
       if (current.status === 'quota_exceeded') db.prepare("UPDATE upstream_accounts SET status = 'active', last_error = NULL, updated_at = ?, request_revision = request_revision + 1 WHERE id = ?").run(now, id);
@@ -199,10 +204,9 @@ export class AccountRepository {
   }
 
   /** Apply an in-flight request result only to the state it observed. */
-  recordObservedFailure(id: string, status: number, message: string, observed?: UpstreamAccount, usedToken?: string): boolean {
-    const db = getDb();
+  recordObservedFailure(id: string, status: number, message: string, observed?: UpstreamAccount, usedToken?: string, db: Database = getDb()): boolean {
     return db.transaction(() => {
-      const current = this.findById(id);
+      const current = this.findById(id, db);
       if (observed && (!current || current.stateRevision !== observed.stateRevision || (usedToken === undefined
         ? current.credentials !== observed.credentials
         : (parseStoredCredentials(current.credentials)?.accessToken ?? current.credentials) !== usedToken))) return false;

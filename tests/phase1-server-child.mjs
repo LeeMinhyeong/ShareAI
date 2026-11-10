@@ -1,6 +1,8 @@
 import http from 'node:http';
 import { once } from 'node:events';
 Object.assign(process.env, { PORT: '1', HOST: '127.0.0.1', NODE_ENV: 'test', DATABASE_URL: 'sqlite::memory:', ENCRYPTION_KEY: 'a'.repeat(64), ADMIN_API_KEY: 'x'.repeat(20), LOG_PRETTY: 'false', CORS_ORIGIN: 'https://example.test' });
+// The production client refuses in-memory SQLite (ADR 0018); use a provisioned private file.
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase();
 const { default: v1 } = await import('../src/routes/v1.ts');
 v1.post('/test-db-body', (_req, res) => {
   import('../src/db/client.ts').then(({ getDb }) => {
@@ -28,15 +30,27 @@ v1.get('/test-refresh', async (req, res) => {
   } catch (e) { console.log('REFRESH_ERROR:' + e.message); }
   res.end();
 });
-v1.get('/test-delayed-db', async (_req, res) => {
-  process.send?.({ handler: 'started' });
-  await new Promise(resolve => setTimeout(resolve, 600));
-  try {
-    const { getDb } = await import('../src/db/client.ts');
-    getDb();
-    console.log('DELAYED_DB_REOPENED');
-  } catch { console.log('DELAYED_DB_CLOSED'); }
-  res.end();
+// Owned exactly like v1.ts trackedRoute (ownedDispatch + scope.run + terminal), so the request drain
+// is what keeps the process alive for this work. The delay is unref'd so nothing else does.
+v1.get('/test-delayed-db', (_req, res) => {
+  void (async () => {
+    const { requestWork } = await import('../src/request-work.ts');
+    const admitted = requestWork.ownedDispatch(scope => {
+      void scope.run(async () => {
+        try {
+          process.send?.({ handler: 'started' });
+          await new Promise(resolve => setTimeout(resolve, 600).unref());
+          try {
+            const { getDb } = await import('../src/db/client.ts');
+            getDb();
+            console.log('DELAYED_DB_DONE');
+          } catch { console.log('DELAYED_DB_FAILED'); }
+          try { res.end(); } catch { /* client gone */ }
+        } finally { scope.terminal(); }
+      });
+    });
+    if (!admitted) { try { res.status(503).end(); } catch { /* best effort */ } }
+  })();
 });
 const originalListen = http.Server.prototype.listen;
 let mainServer;

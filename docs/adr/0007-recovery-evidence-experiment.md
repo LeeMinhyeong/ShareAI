@@ -1,0 +1,34 @@
+# ADR 0007: Recovery evidence experiment for durable restrictions
+
+This document describes a narrower experiment; see [ADR 0006](./0006-shared-cooldown-fencing.md). Its global-blocking proposal was superseded by the user's decision to permit another account for a new request when a 429 scope is unknown. That decision does not establish provider policy compliance.
+
+- **Status:** Proposed; not implemented or independently reviewed.
+- **Scope:** Phase 4 restrictions shared by ordinary upstream and SIWC inference. This does not authorize retry or failover; ADR 0005 remains proposed and its conservative no-bypass principles apply.
+
+## Problem
+
+At the time of the initial investigation, cooldown state for ordinary and SIWC accounts was process-local and could not survive a restart or coordinate other processes. A 429's scope is not determined by its HTTP status, a `Retry-After` header, or which account received it. Another process, a restart, or a different account can therefore evade a restriction. In particular, a 429 need not be limited to one account or even one configured provider. The current upstream HTTP path discards error bodies, so it cannot establish a documented account-specific error signature. Network errors and generic 5xx do not prove an account fault either. A timeout or guessed TTL is not evidence that an unknown restriction has expired.
+
+## Proposed decisions
+
+1. Persist restrictions in the same SQLite database as credentials and policy; commit schema creation and migrations atomically under the existing startup writer transaction. Never persist raw provider bodies, tokens, prompts, or response data. Represent scope and basis explicitly and validate all stored values. Distinguish account kind and immutable ID; attach relevant state and credential generations. Provider/model or account restrictions require documented affirmative scope evidence for the exact endpoint and error signature. No account-specific signature is presently approved by this ADR.
+2. For an observed upstream 429 whose scope is unknown, conservatively stop automatic inference across the shared router rather than silently move to another account, provider or billing path. Do not infer an expiry from absent or untrusted headers. Define a secure, audited administrative recovery operation before enabling this policy; no manual credential or database modifications are implied here. This global policy is an availability tradeoff and needs operator review. It does not claim the real upstream scope is global. SIWC-specific limit signals must not be silently converted into another billing path.
+3. Candidate filtering is advisory only. The authoritative check must execute under the same `BEGIN IMMEDIATE` writer fence that rechecks SIWC ACL, credential snapshot and logout generation, or ordinary credential/status and quota, immediately before starting network dispatch. Explicit SIWC selection must not bypass it. Cancellation while waiting or before dispatch must prevent `start()`. Quota reservations already committed must not be refunded. Database errors and malformed restriction state fail closed.
+4. Apply result-derived account restrictions only if the observation belongs to the current account and credential generation; do not let old successes clear newer restrictions. A generation or intent mechanism must order competing observations, including in-flight success/failure races. Record the restriction before exposing a completed error where feasible; an external network response and SQLite commit cannot be atomic. If the process crashes before persistence, the outcome is uncertain, so any stronger crash guarantee requires a durable pre-dispatch intent and a conservative recovery protocol. Never replay an uncertain attempt.
+5. Unknown-scope 429s cannot justify another attempt in the same request. The existing ordinary 401 refresh-and-retry path is outside this decision and still requires the review described in ADR 0005. A restriction is not evidence that remote execution did not occur.
+
+## Deployment and acceptance
+
+All router processes must be stopped before upgrading the database and binaries together; old binaries do not consult new fences and must not run concurrently. Back up the database and verify restoration before migrating. Do not enable until migration rollback/failure, clean and legacy startup, mixed-generation exclusion, and recovery are tested. Use only scratch databases and mock providers: prove both account kinds, explicit SIWC ACL and logout races, cancellation, selection-to-dispatch races, competing processes, restart, stale outcomes and no secret persistence. Verify unknown-scope 429 cannot be bypassed across accounts/providers and that no same-request retry occurs. Report any pre-persistence crash window explicitly. Production data, accounts and ports are not test fixtures.
+
+## Current status and gaps
+
+The accompanying isolated red regression demonstrates that a fresh worker can send a second request through a different ordinary account after an unknown-scope 429. Experimental ledger and recovery-evidence components exist in the working tree, but they are not connected to production dispatch; production-wide restriction enforcement and safe operator recovery remain unimplemented. This design is not a claim that Phase 4 is complete.
+
+## Isolated recovery evidence experiment
+
+`experimental-recovery-evidence.ts` is an independently invoked, scratch-only experiment, not an application migration or endpoint. It appends an `INVESTIGATE_OPEN` record only when an exact attempt ID and OPEN revision match while holding the SQLite writer. The record is a historical observation, not an approval, attestation that processes are offline, maintenance state, admission fence, or authority to resolve an attempt. The observation can become stale immediately after commit. It never changes an attempt, claim, or restriction and cannot clear a 429. Old code is not fenced by it.
+
+The reason is an enum, not free text. The actor is a caller-provided UUID-shaped opaque identifier, not authenticated identity; attempt IDs and actor IDs must be non-secret operator-assigned identifiers. Validation cannot prove arbitrary identifiers are non-secret. The caller, identity assignment, host, and database access are trusted. Triggers reject ordinary update/delete/replace, and schema validation detects missing or changed triggers on API entry, but a database owner can bypass or replace the schema and data; this is not tamper-proof audit or a defense against direct DB mutation. Uncertain commits must not be treated as approval.
+
+Safe recovery still requires independently verified provider-work drainage, exclusion of every old writer and dispatching process, authenticated operator authorization and auditable policy/evidence for any confirmed 429. No such mechanism is established here. Do not enable recovery or use this experiment in production.

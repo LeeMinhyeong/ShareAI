@@ -1,0 +1,7 @@
+# DB lifecycle and writer invariants (review pending)
+
+The singleton is published only after initialization; shutdown during initialization records a request and initialization must reject before migration commit. Failed close quarantines the handle rather than publishing or reopening it. SQLite WAL changes made before the migration transaction are not rolled back by migration cancellation.
+
+A writer captures the published singleton. Before acquisition, and after reading its potentially reentrant transaction-state property, it revalidates that identity. After the callback it revalidates again before commit; an invalidated singleton aborts the transaction. The in-memory path uses SQLite's transaction wrapper; the file path uses an independent zero-wait connection. Only BEGIN contention is retried: callback, commit and uncertain outcomes are never replayed. Rollback or close errors are combined with the primary error rather than replacing it, including falsey thrown values. A close error after a successful commit is an uncertain outward result, not permission to retry.
+
+These checks assume synchronous, trusted SQLite methods between the final validation and the engine's actual BEGIN/COMMIT. They do not protect against external processes, callers holding raw handles, arbitrary replacement of native methods at the commit boundary, WAL preflight races, or process/disk failure. Cancellation can reduce availability; quarantine requires explicit shutdown. Independent review and isolated acceptance testing remain necessary.

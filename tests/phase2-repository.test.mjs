@@ -16,6 +16,7 @@ const { initDatabase, closeDatabase } = await import('../src/db/client.ts');
 const { UserRepository } = await import('../src/db/repositories/users.ts');
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');
 const { UsageLogRepository } = await import('../src/db/repositories/usage-logs.ts');
+await (await import('./helpers/fresh-db.mjs')).provisionFromEnv(); // production client never creates a database
 const db = initDatabase();
 const users = new UserRepository(), accounts = new AccountRepository(), logs = new UsageLogRepository();
 after(() => { closeDatabase(); rmSync(dir, { recursive: true, force: true }); });
@@ -60,8 +61,8 @@ test('usage logs enforce FK, filter, aggregate, and protect history', () => {
   assert.equal(logs.findById('absent'), null);
   assert.equal(logs.findByUser(u1.id, 1).length, 1);
   assert.equal(logs.findByAccount(a2.id).length, 2);
-  assert.deepEqual(logs.getTodayStats(u1.id), { totalRequests: 2, successRequests: 1, totalTokens: 10 });
-  assert.deepEqual(logs.getAccountTodayStats(a2.id), { totalRequests: 2, successRequests: 1, totalTokens: 10 });
+  assert.deepEqual(logs.getTodayStats(u1.id), { totalRequests: 2, successRequests: 1, totalTokens: 10, totalTokensComplete: false });
+  assert.deepEqual(logs.getAccountTodayStats(a2.id), { totalRequests: 2, successRequests: 1, totalTokens: 10, totalTokensComplete: false });
   assert.equal(users.getTodayUsageCount(u1.id), 0);
   assert.throws(() => accounts.delete(a1.id), /usage history/);
   assert.equal(logs.findById(l1.id).id, l1.id);

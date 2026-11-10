@@ -1,47 +1,62 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 
 const API_BASE = 'http://localhost:20101'
 
-interface UsageLog {
+interface AccountStats {
   id: string
-  timestamp: string
-  model: string
-  provider: string
-  inputTokens: number
-  outputTokens: number
-  success: boolean
-  latencyMs: number
+  name: string
+  provider: 'anthropic' | 'openai' | 'google'
+  status: 'active' | 'quota_exceeded' | 'error' | 'disabled'
+  usedToday: number
+  dailyQuota: number
+  quotaResetAt: string
+}
+
+export function isAccountStatsResponse(value: unknown): value is { accounts: AccountStats[] } {
+  if (!value || typeof value !== 'object' || !('accounts' in value) || !Array.isArray(value.accounts)) return false
+  return value.accounts.every((account: unknown) => {
+    if (!account || typeof account !== 'object') return false
+    const a = account as Record<string, unknown>
+    return typeof a.id === 'string' && typeof a.name === 'string' &&
+      typeof a.provider === 'string' && ['anthropic', 'openai', 'google'].includes(a.provider) &&
+      typeof a.status === 'string' && ['active', 'quota_exceeded', 'error', 'disabled'].includes(a.status) &&
+      Number.isSafeInteger(a.usedToday) && (a.usedToday as number) >= 0 &&
+      typeof a.dailyQuota === 'number' && Number.isFinite(a.dailyQuota) &&
+      typeof a.quotaResetAt === 'string' && Number.isFinite(Date.parse(a.quotaResetAt))
+  })
 }
 
 const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444']
 
 export default function Stats({ adminKey }: { adminKey: string }) {
-  const [accountStats, setAccountStats] = useState<any[]>([])
-  const [recentLogs, setRecentLogs] = useState<UsageLog[]>([])
-  const [loading, setLoading] = useState(true)
+  // A new identity on every key transition also distinguishes A → B → A.
+  const request = useMemo(() => ({}), [adminKey])
+  const [result, setResult] = useState<{ request: object; accounts: AccountStats[] | null } | null>(null)
 
   useEffect(() => {
-    fetchStats()
-  }, [adminKey])
+    let active = true
 
-  const fetchStats = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/admin/accounts`, {
-        headers: { 'Authorization': `Bearer ${adminKey}` }
-      })
-      if (res.ok) {
+    const fetchStats = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/admin/accounts`, {
+          headers: { 'Authorization': `Bearer ${adminKey}` }
+        })
+        if (!res.ok) throw new Error('Request failed')
         const data = await res.json()
-        setAccountStats(data.accounts)
+        if (!isAccountStatsResponse(data)) throw new Error('Invalid response')
+        if (active) setResult({ request, accounts: data.accounts })
+      } catch {
+        if (active) setResult({ request, accounts: null })
       }
-    } catch (e) {
-      console.error('Failed to fetch stats:', e)
-    } finally {
-      setLoading(false)
     }
-  }
+    fetchStats()
+    return () => { active = false }
+  }, [adminKey, request])
 
-  if (loading) return <div className="loading">데이터를 불러오는 중...</div>
+  if (!result || result.request !== request) return <div className="loading">데이터를 불러오는 중...</div>
+  if (!result.accounts) return <div role="alert">통계를 불러오지 못했습니다. 페이지를 새로고침해 주세요.</div>
+  const accountStats = result.accounts
 
   // Provide별 데이터
   const providerData = [
@@ -55,6 +70,7 @@ export default function Stats({ adminKey }: { adminKey: string }) {
     { name: '활성', value: accountStats.filter(a => a.status === 'active').length },
     { name: '할당량초과', value: accountStats.filter(a => a.status === 'quota_exceeded').length },
     { name: '오류', value: accountStats.filter(a => a.status === 'error').length },
+    { name: '비활성', value: accountStats.filter(a => a.status === 'disabled').length },
   ].filter(d => d.value > 0)
 
   return (
@@ -111,14 +127,14 @@ export default function Stats({ adminKey }: { adminKey: string }) {
         <div className="card" style={{ gridColumn: 'span 2' }}>
           <h3 style={{ marginBottom: 20 }}>계정별 사용량</h3>
           <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={accountStats.slice(0, 6)}>
+            <BarChart data={accountStats.slice(0, 6).map(({ name, usedToday }) => ({ name, usedToday }))}>
               <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 12 }} />
               <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} />
               <Tooltip 
                 contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
                 labelStyle={{ color: '#f1f5f9' }}
               />
-              <Bar dataKey="usedToday" name="오늘 사용" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="usedToday" name="기존 성공 기록" fill="#3b82f6" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -134,9 +150,9 @@ export default function Stats({ adminKey }: { adminKey: string }) {
               <th>계정</th>
               <th>제공자</th>
               <th>상태</th>
-              <th>오늘 사용</th>
+              <th>기존 성공 기록 (일일 보장 안 됨)</th>
               <th>일일 할당량</th>
-              <th>리셋 시간</th>
+              <th>기록된 기존 리셋 시각 (일일 할당량과 별개)</th>
             </tr>
           </thead>
           <tbody>
@@ -150,7 +166,7 @@ export default function Stats({ adminKey }: { adminKey: string }) {
                   </span>
                 </td>
                 <td>{account.usedToday}</td>
-                <td>{account.dailyQuota === 0 ? '∞' : account.dailyQuota}</td>
+                <td>{!Number.isSafeInteger(account.dailyQuota) || account.dailyQuota < 0 ? '알 수 없음' : account.dailyQuota === 0 ? '∞' : account.dailyQuota}</td>
                 <td>{account.quotaResetAt ? new Date(account.quotaResetAt).toLocaleTimeString('ko-KR') : '-'}</td>
               </tr>
             ))}

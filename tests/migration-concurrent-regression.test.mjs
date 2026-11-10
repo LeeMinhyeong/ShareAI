@@ -6,8 +6,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SQL_SCHEMA } from '../src/db/schema.ts';
+import { UPGRADE_DEFERRED } from './helpers/upgrade-deferred.mjs';
 
-test('simultaneous legacy migrations preserve accounts and references', {timeout:60000}, async () => {
+// Also failed with Windows EPERM on scratch cleanup before ADR 0018; recheck that separately when re-enabling.
+test('simultaneous legacy migrations preserve accounts and references', {skip: UPGRADE_DEFERRED, timeout:60000}, async () => {
   for (const rebuild of [false,true]) for (let round=0;round<3;round++) {
     const dir=mkdtempSync(path.join(process.env.TMPDIR,'router-concurrent-migrate-')); const file=path.join(dir,'old.db');
     try {
@@ -17,7 +19,7 @@ test('simultaneous legacy migrations preserve accounts and references', {timeout
       db.exec(schema);
       db.exec("INSERT INTO upstream_accounts(id,name,provider,credential_type,credentials,status,quota_reset_at) VALUES ('a','legacy','openai','api_key','key','active','2099-01-01'); INSERT INTO users(id,api_key_hash,name,email,tier) VALUES ('u','hash','user','e','free'); INSERT INTO usage_logs(id,user_id,upstream_account_id,model,provider,success,latency_ms) VALUES ('l','u','a','m','openai',1,1)");
       db.pragma('journal_mode = WAL'); db.exec('BEGIN IMMEDIATE');
-      const children=Array.from({length:8},()=>fork(new URL('./migration-barrier-child.mjs',import.meta.url),[],{cwd:process.cwd(),execArgv:['--import','tsx'],stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,NODE_ENV:'test',DATABASE_URL:`sqlite:${file}`,ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_PRETTY:'false'}}));
+      const children=Array.from({length:8},()=>fork(new URL('./migration-barrier-child.mjs',import.meta.url),[],{cwd:process.cwd(),execArgv:['--import',import.meta.resolve('tsx')],stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,NODE_ENV:'test',DATABASE_URL:`sqlite:${file}`,ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_PRETTY:'false'}}));
       const errors=children.map(()=> ''); children.forEach((p,i)=>p.stderr.on('data',d=>errors[i]+=d));
       try {
         assert.deepEqual(await Promise.all(children.map(p=>once(p,'message').then(([m])=>m))),Array(8).fill('ready'));

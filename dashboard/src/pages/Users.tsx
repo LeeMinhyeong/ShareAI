@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Pencil, Trash2, RefreshCw, Copy } from 'lucide-react'
+import { Plus, Pencil, RefreshCw, Copy } from 'lucide-react'
 
 const API_BASE = 'http://localhost:20101'
 
@@ -17,7 +17,7 @@ export default function UsersPage({ adminKey, onUpdate }: { adminKey: string; on
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
-  const [editing, setEditing] = useState<User | null>(null)
+  useState<User | null>(null)
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [form, setForm] = useState({
     name: '',
@@ -71,10 +71,6 @@ export default function UsersPage({ adminKey, onUpdate }: { adminKey: string; on
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('정말 삭제하시겠습니까?')) return
-    // Delete 구현
-  }
 
   const copyKey = (key: string) => {
     navigator.clipboard.writeText(key)
@@ -103,6 +99,7 @@ export default function UsersPage({ adminKey, onUpdate }: { adminKey: string; on
           <thead>
             <tr>
               <th>이름</th>
+              <th>사용자 ID</th>
               <th>이메일</th>
               <th>티어</th>
               <th>일일 제한</th>
@@ -115,6 +112,7 @@ export default function UsersPage({ adminKey, onUpdate }: { adminKey: string; on
             {users.map(user => (
               <tr key={user.id}>
                 <td><strong>{user.name}</strong></td>
+                <td><code>{user.id}</code></td>
                 <td>{user.email}</td>
                 <td><span className={`tier-badge ${user.tier}`}>{user.tier}</span></td>
                 <td>{user.dailyLimit}</td>

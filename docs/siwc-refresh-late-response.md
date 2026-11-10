@@ -1,0 +1,9 @@
+# SIWC refresh timeouts and late responses
+
+SIWC commits a permanent intent before dispatch. The 15-second operation deadline aborts the provider transport and returns an uncertain error; an individual waiter can also time out or cancel sooner. Neither proves that the provider did not rotate the token. Never retry the old refresh token or delete its intent based on a timeout.
+
+If a transport or response body ignores abort and later supplies a valid successful rotation, the independently tracked operation verifies any returned ID token using the existing issuer, audience, signature and identity checks, then attempts persistence with a fresh bounded SQLite contention budget. The atomic attempt, source-revision and identity fence still applies: logout or replacement cannot be overwritten. The rotated refresh token is saved before rejecting an expired access token. A timed-out waiter is never retroactively told it succeeded.
+
+An abort, malformed response, failed or timed-out JWKS verification, persistence failure or uncertain commit is not proof of provider state; the permanent intent remains a fence and recovery may require reauthorization. If all waiters depart immediately after a claim commits but before dispatch, SIWC has no exact-unused-claim release API and conservatively keeps the claim. A caller may need reauthorization even though no request was sent.
+
+Request-work tracking continues until the inner operation and its database work settle, including after the waiter returns. Abort is cooperative: a provider, response body or JWKS fetch that never settles can remain tracked indefinitely. Shutdown must retain its existing bounded force-exit behavior; forced exit can lose a late rotation and leave the intent fenced. This is best effort, not a guarantee of recovery or remote exactly-once execution.

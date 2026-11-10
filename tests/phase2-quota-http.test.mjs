@@ -10,6 +10,7 @@ process.env.ADMIN_API_KEY = 'test-admin-key-'.repeat(3);
 process.env.LOG_LEVEL = 'error';
 process.env.LOG_PRETTY = 'false';
 
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const { initDatabase, closeDatabase } = await import('../src/db/client.ts');
 const { UserRepository } = await import('../src/db/repositories/users.ts');
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');

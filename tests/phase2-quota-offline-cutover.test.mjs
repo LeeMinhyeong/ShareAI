@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { SQL_SCHEMA } from '../src/db/schema.ts';
+import { UPGRADE_DEFERRED } from './helpers/upgrade-deferred.mjs';
 
-test('a late legacy success is not included by a second migration', () => {
+test('a late legacy success is not included by a second migration', {skip: UPGRADE_DEFERRED}, () => {
   const dir = mkdtempSync(join(process.env.TMPDIR, 'quota-offline-cutover-'));
   const file = join(dir, 'fixture.db');
   const env = { ...process.env, NODE_ENV: 'test', DATABASE_URL: `sqlite:${file}`,

@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import {responseStream} from './phase4-protocol-fixtures.mjs';
 Object.assign(process.env,{NODE_ENV:'test',DATABASE_URL:'sqlite::memory:',ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_PRETTY:'false'});
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const {AccountRepository}=await import('../src/db/repositories/accounts.ts');
 const {resolveAuth}=await import('../src/upstream/tokens.ts');
 const {refreshTokens}=await import('../src/upstream/oauth.ts');
@@ -20,7 +22,7 @@ test('in-flight request failure preserves administrator disabled status and erro
 
 test('successful in-flight request preserves newer admin error on quota state',async()=>{
  const a=create('success-admin',creds('success-token','success-refresh'));repo.update(a.id,{status:'quota_exceeded'});let start,release;const entered=new Promise(r=>start=r),gate=new Promise(r=>release=r);const old=globalThis.fetch;
- globalThis.fetch=async()=>{start();await gate;return new Response('data: {"type":"response.completed"}\n\n',{headers:{'content-type':'text/event-stream'}})};
+ globalThis.fetch=async()=>{start();await gate;return new Response(responseStream,{headers:{'content-type':'text/event-stream'}})};
  try{const p=forwardChat(req,response());await entered;repo.update(a.id,{lastError:'admin update'});release();await p;const saved=repo.findById(a.id);assert.equal(saved.status,'quota_exceeded');assert.equal(saved.lastError,'admin update');}finally{release();globalThis.fetch=old;repo.delete(a.id);}
 });
 
@@ -43,6 +45,6 @@ test('malformed refresh JSON does not expose response token in error',async()=>{
 
 test('old 401 retries using latest token without rotating it',async()=>{
  const a=create('stale-401',creds('old-401','old-refresh')); let start,release;const entered=new Promise(r=>start=r),gate=new Promise(r=>release=r);const old=globalThis.fetch;let refreshCalls=0;const seen=[];
- globalThis.fetch=async(url,options)=>{if(String(url).includes('/oauth/token')){refreshCalls++;return new Response(JSON.stringify({access_token:'unneeded',refresh_token:'unneeded-refresh',expires_in:3600}))} const token=options.headers.authorization;seen.push(token);if(seen.length===1){start();await gate;return new Response('',{status:401})}return new Response('data: {"type":"response.completed"}\n\n',{headers:{'content-type':'text/event-stream'}})};
+ globalThis.fetch=async(url,options)=>{if(String(url).includes('/oauth/token')){refreshCalls++;return new Response(JSON.stringify({access_token:'unneeded',refresh_token:'unneeded-refresh',expires_in:3600}))} const token=options.headers.authorization;seen.push(token);if(seen.length===1){start();await gate;return new Response('',{status:401})}return new Response(responseStream,{headers:{'content-type':'text/event-stream'}})};
  try{const res=response();const p=forwardChat(req,res);await entered;repo.update(a.id,{credentials:creds('new-401','new-refresh')});release();await p;assert.equal(refreshCalls,0);assert.deepEqual(seen,['Bearer old-401','Bearer new-401']);assert.equal(res.body.choices[0].finish_reason,'stop');}finally{release();globalThis.fetch=old;}
 });

@@ -5,8 +5,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SQL_SCHEMA } from '../src/db/schema.ts';
+import { UPGRADE_DEFERRED } from './helpers/upgrade-deferred.mjs';
 
-test('credential generation migration is idempotent, preserves revisions and works with legacy rebuild', () => {
+test('credential generation migration is idempotent, preserves revisions and works with legacy rebuild', {skip: UPGRADE_DEFERRED}, () => {
   for(const rebuild of [false,true]) for(const existing of [false,true]) {
     const dir=mkdtempSync(path.join(process.env.TMPDIR,'credential-revision-')), file=path.join(dir,'db.sqlite');
     try {

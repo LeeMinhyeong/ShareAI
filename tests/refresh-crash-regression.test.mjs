@@ -8,11 +8,12 @@ const scratch = path.join(os.homedir(), 'AppData', 'Local', 'hermes', 'cache', '
 mkdirSync(scratch, { recursive: true });
 const dir = mkdtempSync(path.join(scratch, 'refresh-crash-'));
 Object.assign(process.env, { NODE_ENV: 'test', DATABASE_URL: `sqlite:${path.join(dir, 'test.db')}`, ENCRYPTION_KEY: 'a'.repeat(64), ADMIN_API_KEY: 'x'.repeat(20), LOG_PRETTY: 'false' });
+await (await import('./helpers/fresh-db.mjs')).provisionFromEnv(); // production client never creates a database
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');
 const { closeDatabase } = await import('../src/db/client.ts');
 const repo = new AccountRepository();
 function child(id) {
-  const process = fork(new URL('./refresh-race-child.mjs', import.meta.url), [], { env: {...globalThis.process.env, TEST_ACCOUNT_ID: id}, execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+  const process = fork(new URL('./refresh-race-child.mjs', import.meta.url), [], { env: {...globalThis.process.env, TEST_ACCOUNT_ID: id}, execArgv: ['--import', import.meta.resolve('tsx')], stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
   const messages = [];
   process.on('message', m => messages.push(m));
   const exit = new Promise((resolve, reject) => {

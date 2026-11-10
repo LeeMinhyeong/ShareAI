@@ -8,13 +8,14 @@ const scratch = path.join(os.homedir(), 'AppData', 'Local', 'hermes', 'cache', '
 mkdirSync(scratch, { recursive: true });
 const dir = mkdtempSync(path.join(scratch, 'refresh-intent-'));
 Object.assign(process.env, { NODE_ENV:'test', DATABASE_URL:`sqlite:${path.join(dir,'test.db')}`, ENCRYPTION_KEY:'a'.repeat(64), ADMIN_API_KEY:'x'.repeat(20), LOG_PRETTY:'false' });
+await (await import('./helpers/fresh-db.mjs')).provisionFromEnv(); // production client never creates a database
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');
 const { closeDatabase } = await import('../src/db/client.ts');
 const { resolveAuth } = await import('../src/upstream/tokens.ts');
 const repo = new AccountRepository();
 const delay = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn) { for (let i=0;i<200;i++) { if (fn()) return; await delay(25); } throw new Error('child timeout'); }
-function child(id) { const p = fork(new URL('./refresh-race-child.mjs', import.meta.url), [], {env:{...process.env, TEST_ACCOUNT_ID:id}, execArgv:['--import','tsx'], stdio:['ignore','ignore','inherit','ipc']}); const messages=[]; p.on('message', m=>messages.push(m)); return {p,messages}; }
+function child(id) { const p = fork(new URL('./refresh-race-child.mjs', import.meta.url), [], {env:{...process.env, TEST_ACCOUNT_ID:id}, execArgv:['--import',import.meta.resolve('tsx')], stdio:['ignore','ignore','inherit','ipc']}); const messages=[]; p.on('message', m=>messages.push(m)); return {p,messages}; }
 const creds = token => JSON.stringify({kind:'oauth',accessToken:'old',refreshToken:token,expiresAt:1});
 test('concurrent processes make at most one provider call', {timeout:10000}, async () => {
   const a=repo.create({name:'intent-race',provider:'openai',credentialType:'oauth',credentials:creds('race-token')});

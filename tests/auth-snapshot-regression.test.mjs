@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 Object.assign(process.env, {NODE_ENV:'test',DATABASE_URL:'sqlite::memory:',ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_PRETTY:'false'});
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const {AccountRepository}=await import('../src/db/repositories/accounts.ts');
 const {AccountPoolManager}=await import('../src/account-pool/manager.ts');
 const {resolveAuth}=await import('../src/upstream/tokens.ts');
@@ -30,6 +31,7 @@ test('concurrent observations of same generation both record failures', async ()
 
 test('forward records 401 against the credential actually sent, but not after admin ABA', async () => {
   const {accountPool}=await import('../src/account-pool/manager.ts');
+  (await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
   const {forwardChat}=await import('../src/upstream/forward-chat.ts');
   const {EventEmitter}=await import('node:events');
   const oldSelect=accountPool.selectAccount, oldFetch=globalThis.fetch;
@@ -39,7 +41,7 @@ test('forward records 401 against the credential actually sent, but not after ad
       accountPool.selectAccount=async()=>{repo.update(a.id,{credentials:'sk-new'}); return a;};
       globalThis.fetch=async (_url,opts)=>{
         assert.equal(opts.headers.authorization,'Bearer sk-new');
-        if (aba) repo.update(a.id,{credentials:'sk-new'});
+        if (aba) {await new Promise(r=>setImmediate(r)); /* let the dispatch fence commit before the concurrent admin write */ repo.update(a.id,{credentials:'sk-new'});}
         return new Response('',{status:401});
       };
       const res=new EventEmitter(); res.status=function(s){this.statusCode=s;return this;}; res.json=function(body){this.body=body;};
@@ -52,6 +54,7 @@ test('forward records 401 against the credential actually sent, but not after ad
 
 test('refresh result carries the revision used for a rejected rotated token', async () => {
   const {accountPool}=await import('../src/account-pool/manager.ts');
+  (await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
   const {forwardChat}=await import('../src/upstream/forward-chat.ts');
   const {EventEmitter}=await import('node:events');
   const oldSelect=accountPool.selectAccount, oldFetch=globalThis.fetch;
@@ -71,6 +74,7 @@ test('refresh result carries the revision used for a rejected rotated token', as
 
 test('401 triggers refresh and retries with the refreshed credential generation', async () => {
   const {accountPool}=await import('../src/account-pool/manager.ts');
+  (await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
   const {forwardChat}=await import('../src/upstream/forward-chat.ts');
   const {EventEmitter}=await import('node:events');
   const a=repo.create({name:'actual-401-refresh',provider:'openai',credentialType:'oauth',credentials:JSON.stringify({kind:'oauth',accessToken:'initial',refreshToken:'actual-refresh',expiresAt:Date.now()+3600000,accountId:'workspace'})});
@@ -91,6 +95,7 @@ test('401 triggers refresh and retries with the refreshed credential generation'
 
 test('old 401 refreshes administrator replacement with the same access token', async () => {
   const {accountPool}=await import('../src/account-pool/manager.ts');
+  (await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
   const {forwardChat}=await import('../src/upstream/forward-chat.ts');
   const {EventEmitter}=await import('node:events');
   const creds=refreshToken=>JSON.stringify({kind:'oauth',accessToken:'same',refreshToken,expiresAt:Date.now()+3600000,accountId:'workspace'});
@@ -101,7 +106,7 @@ test('old 401 refreshes administrator replacement with the same access token', a
     globalThis.fetch=async (url,opts)=>{
       if (String(url).includes('oauth/token')) {calls.push('refresh'); assert.equal(new URLSearchParams(opts.body).get('refresh_token'),'admin-forward'); return new Response(JSON.stringify({access_token:'bad',refresh_token:'bad',expires_in:3600}));}
       calls.push(opts.headers.authorization);
-      if (calls.length===1) repo.update(a.id,{credentials:creds('admin-forward')});
+      if (calls.length===1) {await new Promise(r=>setImmediate(r)); /* let the dispatch fence commit before the concurrent admin write */ repo.update(a.id,{credentials:creds('admin-forward')});}
       return new Response('',{status:401});
     };
     const res=new EventEmitter(); res.status=function(s){this.statusCode=s;return this;}; res.json=function(body){this.body=body;};

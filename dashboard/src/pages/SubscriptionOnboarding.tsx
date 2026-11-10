@@ -38,8 +38,9 @@ export default function SubscriptionOnboarding({ adminKey, onUpdate }: { adminKe
     } catch { setCode(''); setMessage('로그인 확인에 실패했습니다. 세션과 코드를 확인하세요.') }
   }
   return <details className="table-container">
-    <summary>Claude / ChatGPT 구독 계정 연결</summary>
+    <summary>기존 Claude / Codex 로그인 및 가져오기</summary>
     <div style={{ padding: 16, display: 'grid', gap: 8 }}>
+      <p>기존 OpenAI 경로는 Codex 구독 자격증명용이며 위의 공식 ChatGPT 플랜 로그인과 별개입니다.</p>
       {message && <p role="status">{message}</p>}
       {flow ? <>
         <a href={flow.authUrl} target="_blank" rel="noopener noreferrer">로그인 창 열기</a>
@@ -50,7 +51,7 @@ export default function SubscriptionOnboarding({ adminKey, onUpdate }: { adminKe
         <input value={name} onChange={e => setName(e.target.value)} placeholder="계정 이름" />
         <select value={provider} onChange={e => setProvider(e.target.value)}><option value="anthropic">Claude</option><option value="openai">ChatGPT</option></select>
         <button type="button" onClick={() => begin(false)}>브라우저 로그인</button>
-        <textarea autoComplete="off" value={credentials} onChange={e => setCredentials(e.target.value)} placeholder="또는 Claude/Codex 자격증명 JSON 붙여넣기" />
+        <input type="password" autoComplete="off" value={credentials} onChange={e => setCredentials(e.target.value)} placeholder="또는 Claude/Codex 자격증명 JSON 붙여넣기" />
         <button type="button" onClick={() => begin(true)}>자격증명 가져오기</button>
       </>}
     </div>

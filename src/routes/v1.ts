@@ -2,24 +2,89 @@
  * /v1 API 라우트 (OpenAI 호환)
  */
 import { Router } from 'express';
-import type { Request, Response } from 'express';
-import { authenticateUser, authenticateUserWithoutQuota } from '../auth/user-auth.js';
+import type { Request, Response, NextFunction } from 'express';
+import { authenticateUserInDispatch } from '../auth/user-auth.js';
 import { forwardChat } from '../upstream/forward-chat.js';
+import { requestWork } from '../request-work.js';
+import { logger } from '../utils/logger.js';
+import { env } from '../config/env.js';
 
 const router = Router();
 
+// Deny even unmatched v1 paths after stop. Each known endpoint acquires its
+// own private lease before it starts; request identity is not a capability.
+const dispatchRouter = router as typeof router & { handle(req: Request, res: Response, out: NextFunction): void };
+const handle = dispatchRouter.handle;
+dispatchRouter.handle = function (req: Request, res: Response, out: NextFunction) {
+  if (requestWork.isAccepting()) return handle.call(router, req, res, out);
+  try { res.status(503).json({ error: { type: 'service_unavailable', message: 'Server is shutting down.' } }); }
+  catch { try { res.destroy(); } catch { /* best effort */ } }
+};
+
+// Covers the whole route promise, not the socket lifetime.
+// Other server producers are not covered by this manager.
+function trackedRoute(handler: (req: Request, res: Response) => unknown) {
+  return (req: Request, res: Response, _next: NextFunction): void => {
+    const admitted = requestWork.ownedDispatch(scope => {
+      const work = scope.run(async () => {
+        try {
+          if (!res.destroyed) await handler(req, res);
+          scope.terminal();
+        } catch {
+          // Never hand an owned failure to Express: next() can schedule work
+          // without returning its promise. Log only a freshly normalized error.
+          try { logger.error({ err: new Error('Internal server error.'), path: req.path, method: req.method }, 'Unhandled error'); } catch { /* best effort */ }
+          try {
+            if (res.destroyed || res.writableEnded) return;
+            if (res.headersSent) res.destroy();
+            else res.status(500).json({ error: {
+              type: 'internal_error',
+              message: env.NODE_ENV === 'production' ? 'Internal server error' : 'Internal server error.',
+            } });
+          } catch { try { res.destroy(); } catch { /* best effort */ } }
+          finally { scope.terminal(); }
+        }
+      });
+      if (work) void work;
+    });
+    if (!admitted) {
+      try { res.status(503).json({ error: { type: 'service_unavailable', message: 'Server is shutting down.' } }); }
+      catch { try { res.destroy(); } catch { /* best effort */ } }
+    }
+  };
+}
+
+
+// Express's automatic OPTIONS responder does not invoke the router callback.
+if (typeof router.use === 'function') {
+  const options = trackedRoute((req, res) => {
+    const allow = /^\/models\/?(?:\?|$)/i.test(req.url) ? 'GET,HEAD' : 'POST';
+    return res.set('Allow', allow).send(allow);
+  });
+  router.use((req, res, next) => {
+    if (req.method === 'OPTIONS' && /^\/(?:models|messages|chat\/completions)\/?(?:\?|$)/i.test(req.url)) options(req, res, next);
+    else next();
+  });
+}
+
+function ownedEndpoint(reserveQuota: boolean, handler: (req: Request, res: Response) => unknown) {
+  return trackedRoute((req, res) =>
+    authenticateUserInDispatch(req, res, () => {
+      if (!res.destroyed) return handler(req, res);
+    }, reserveQuota));
+}
 
 /**
  * POST /v1/chat/completions
  * OpenAI Chat Completions API 호환
  */
-router.post('/chat/completions', authenticateUser, forwardChat);
+router.post('/chat/completions', ownedEndpoint(true, forwardChat));
 
 /**
  * POST /v1/messages
  * Anthropic Messages API 호환
  */
-router.post('/messages', authenticateUser, async (req: Request, res: Response) => {
+router.post('/messages', ownedEndpoint(true, async (req: Request, res: Response) => {
   const user = req.user!;
   
   res.status(501).json({
@@ -28,13 +93,13 @@ router.post('/messages', authenticateUser, async (req: Request, res: Response) =
       message: 'Anthropic Messages API will be implemented soon.',
     },
   });
-});
+}));
 
 /**
  * GET /v1/models
  * 사용 가능한 모델 목록
  */
-router.get('/models', authenticateUserWithoutQuota, (req: Request, res: Response) => {
+router.get('/models', ownedEndpoint(false, (req: Request, res: Response) => {
   res.json({
     object: 'list',
     data: [
@@ -45,6 +110,6 @@ router.get('/models', authenticateUserWithoutQuota, (req: Request, res: Response
       { id: 'gemini-2.0-flash-exp', object: 'model', owned_by: 'google' },
     ],
   });
-});
+}));
 
 export default router;

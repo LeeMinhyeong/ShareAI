@@ -1,0 +1,314 @@
+[
+  {
+    "type": "index",
+    "name": "idx_siwc_usage_account_timestamp",
+    "tbl_name": "siwc_usage_logs",
+    "sql": "CREATE INDEX idx_siwc_usage_account_timestamp ON siwc_usage_logs(account_id, timestamp DESC)"
+  },
+  {
+    "type": "index",
+    "name": "idx_siwc_usage_user_timestamp",
+    "tbl_name": "siwc_usage_logs",
+    "sql": "CREATE INDEX idx_siwc_usage_user_timestamp ON siwc_usage_logs(user_id, timestamp DESC)"
+  },
+  {
+    "type": "index",
+    "name": "idx_upstream_accounts_status",
+    "tbl_name": "upstream_accounts",
+    "sql": "CREATE INDEX idx_upstream_accounts_status ON upstream_accounts(status, provider)"
+  },
+  {
+    "type": "index",
+    "name": "idx_usage_logs_account_timestamp",
+    "tbl_name": "usage_logs",
+    "sql": "CREATE INDEX idx_usage_logs_account_timestamp ON usage_logs(upstream_account_id, timestamp DESC)"
+  },
+  {
+    "type": "index",
+    "name": "idx_usage_logs_user_timestamp",
+    "tbl_name": "usage_logs",
+    "sql": "CREATE INDEX idx_usage_logs_user_timestamp ON usage_logs(user_id, timestamp DESC)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_account_429_cooldowns_1",
+    "tbl_name": "account_429_cooldowns",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_account_daily_reservations_1",
+    "tbl_name": "account_daily_reservations",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_account_pool_rules_1",
+    "tbl_name": "account_pool_rules",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_oauth_refresh_intents_1",
+    "tbl_name": "oauth_refresh_intents",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_ordinary_account_attempts_1",
+    "tbl_name": "ordinary_account_attempts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_settings_1",
+    "tbl_name": "settings",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_access_policy_1",
+    "tbl_name": "siwc_access_policy",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_access_users_1",
+    "tbl_name": "siwc_access_users",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_authorization_intents_1",
+    "tbl_name": "siwc_authorization_intents",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_credentials_1",
+    "tbl_name": "siwc_credentials",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_credentials_2",
+    "tbl_name": "siwc_credentials",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_refresh_claim_versions_1",
+    "tbl_name": "siwc_refresh_claim_versions",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_resolved_refresh_intents_1",
+    "tbl_name": "siwc_resolved_refresh_intents",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_routing_settings_1",
+    "tbl_name": "siwc_routing_settings",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_siwc_usage_logs_1",
+    "tbl_name": "siwc_usage_logs",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_upstream_accounts_1",
+    "tbl_name": "upstream_accounts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_upstream_accounts_2",
+    "tbl_name": "upstream_accounts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_usage_logs_1",
+    "tbl_name": "usage_logs",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_user_daily_quota_1",
+    "tbl_name": "user_daily_quota",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_users_1",
+    "tbl_name": "users",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_users_2",
+    "tbl_name": "users",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_users_3",
+    "tbl_name": "users",
+    "sql": null
+  },
+  {
+    "type": "table",
+    "name": "account_429_cooldowns",
+    "tbl_name": "account_429_cooldowns",
+    "sql": "CREATE TABLE account_429_cooldowns (\n  kind TEXT NOT NULL, account_id TEXT NOT NULL,\n  observed_at INTEGER NOT NULL, until_at INTEGER NOT NULL,\n  revision INTEGER NOT NULL CHECK(revision > 0),\n  PRIMARY KEY(kind, account_id)\n)"
+  },
+  {
+    "type": "table",
+    "name": "account_daily_reservations",
+    "tbl_name": "account_daily_reservations",
+    "sql": "CREATE TABLE account_daily_reservations (\n        account_id TEXT PRIMARY KEY REFERENCES upstream_accounts(id) ON DELETE CASCADE,\n        day TEXT NOT NULL, used INTEGER NOT NULL CHECK(typeof(used)='integer' AND used >= 0),\n        legacy_ambiguous INTEGER NOT NULL CHECK(legacy_ambiguous IN (0,1))\n      )"
+  },
+  {
+    "type": "table",
+    "name": "account_pool_rules",
+    "tbl_name": "account_pool_rules",
+    "sql": "CREATE TABLE account_pool_rules (\n  id TEXT PRIMARY KEY,\n  user_id TEXT,\n  provider TEXT,\n  model_pattern TEXT NOT NULL,\n  \n  allowed_account_ids TEXT NOT NULL,\n  selection_strategy TEXT NOT NULL CHECK (selection_strategy IN ('round_robin', 'priority', 'least_used')),\n  enable_fallback BOOLEAN NOT NULL DEFAULT TRUE,\n  \n  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE\n)"
+  },
+  {
+    "type": "table",
+    "name": "account_quota_migration_marker",
+    "tbl_name": "account_quota_migration_marker",
+    "sql": "CREATE TABLE account_quota_migration_marker (id INTEGER PRIMARY KEY CHECK(id=1))"
+  },
+  {
+    "type": "table",
+    "name": "oauth_refresh_intents",
+    "tbl_name": "oauth_refresh_intents",
+    "sql": "CREATE TABLE oauth_refresh_intents (\n      token_fingerprint TEXT PRIMARY KEY, attempt_id TEXT NOT NULL,\n      account_id TEXT NOT NULL, created_at TEXT NOT NULL\n    )"
+  },
+  {
+    "type": "table",
+    "name": "ordinary_account_attempts",
+    "tbl_name": "ordinary_account_attempts",
+    "sql": "CREATE TABLE ordinary_account_attempts (\n  account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL\n)"
+  },
+  {
+    "type": "table",
+    "name": "ordinary_attempts_schema_marker",
+    "tbl_name": "ordinary_attempts_schema_marker",
+    "sql": "CREATE TABLE ordinary_attempts_schema_marker (\n  id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1)\n)"
+  },
+  {
+    "type": "table",
+    "name": "quota_migration_marker",
+    "tbl_name": "quota_migration_marker",
+    "sql": "CREATE TABLE quota_migration_marker (id INTEGER PRIMARY KEY CHECK (id = 1))"
+  },
+  {
+    "type": "table",
+    "name": "settings",
+    "tbl_name": "settings",
+    "sql": "CREATE TABLE settings (\n  key TEXT PRIMARY KEY,\n  value TEXT NOT NULL\n)"
+  },
+  {
+    "type": "table",
+    "name": "siwc_access_policy",
+    "tbl_name": "siwc_access_policy",
+    "sql": "CREATE TABLE siwc_access_policy (\n        account_id TEXT PRIMARY KEY REFERENCES siwc_accounts(id) ON DELETE CASCADE,\n        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),\n        scope TEXT NOT NULL CHECK(scope IN ('all','selected'))\n      )"
+  },
+  {
+    "type": "table",
+    "name": "siwc_access_users",
+    "tbl_name": "siwc_access_users",
+    "sql": "CREATE TABLE siwc_access_users (\n        account_id TEXT NOT NULL REFERENCES siwc_access_policy(account_id) ON DELETE CASCADE,\n        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n        PRIMARY KEY(account_id, user_id)\n      )"
+  },
+  {
+    "type": "table",
+    "name": "siwc_authorization_intents",
+    "tbl_name": "siwc_authorization_intents",
+    "sql": "CREATE TABLE siwc_authorization_intents (\n      attempt_id TEXT PRIMARY KEY, account_id TEXT NOT NULL\n    )"
+  },
+  {
+    "type": "table",
+    "name": "siwc_credentials",
+    "tbl_name": "siwc_credentials",
+    "sql": "CREATE TABLE siwc_credentials (\n      id TEXT PRIMARY KEY, registration_key TEXT UNIQUE NOT NULL, credentials TEXT NOT NULL\n    , revision TEXT NOT NULL DEFAULT '')"
+  },
+  {
+    "type": "table",
+    "name": "siwc_refresh_claim_versions",
+    "tbl_name": "siwc_refresh_claim_versions",
+    "sql": "CREATE TABLE siwc_refresh_claim_versions (\n      token_fingerprint TEXT PRIMARY KEY, source_revision TEXT NOT NULL\n    )"
+  },
+  {
+    "type": "table",
+    "name": "siwc_resolved_refresh_intents",
+    "tbl_name": "siwc_resolved_refresh_intents",
+    "sql": "CREATE TABLE siwc_resolved_refresh_intents (\n      token_fingerprint TEXT PRIMARY KEY\n    , result_revision TEXT)"
+  },
+  {
+    "type": "table",
+    "name": "siwc_routing_settings",
+    "tbl_name": "siwc_routing_settings",
+    "sql": "CREATE TABLE siwc_routing_settings (\n        account_id TEXT PRIMARY KEY REFERENCES siwc_accounts(id) ON DELETE CASCADE,\n        priority INTEGER NOT NULL DEFAULT 0 CHECK(typeof(priority)='integer' AND priority BETWEEN 0 AND 1000),\n        weight INTEGER NOT NULL DEFAULT 1 CHECK(typeof(weight)='integer' AND weight BETWEEN 1 AND 100)\n      )"
+  },
+  {
+    "type": "table",
+    "name": "siwc_usage_logs",
+    "tbl_name": "siwc_usage_logs",
+    "sql": "CREATE TABLE siwc_usage_logs (\n        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),\n        account_id TEXT NOT NULL REFERENCES siwc_accounts(id), timestamp TEXT NOT NULL,\n        model TEXT NOT NULL, provider TEXT NOT NULL, input_tokens INTEGER, output_tokens INTEGER,\n        success INTEGER NOT NULL CHECK(success IN (0,1)), aborted INTEGER NOT NULL CHECK(aborted IN (0,1)),\n        status INTEGER, latency_ms INTEGER NOT NULL\n      )"
+  },
+  {
+    "type": "table",
+    "name": "upstream_accounts",
+    "tbl_name": "upstream_accounts",
+    "sql": "CREATE TABLE upstream_accounts (\n  id TEXT PRIMARY KEY,\n  name TEXT UNIQUE NOT NULL,\n  provider TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'google')),\n  credential_type TEXT NOT NULL CHECK (credential_type IN ('cookie', 'api_key', 'session_token', 'oauth')),\n  credentials TEXT NOT NULL,\n  meta TEXT,\n  quota_info TEXT,\n  \n  status TEXT NOT NULL CHECK (status IN ('active', 'quota_exceeded', 'error', 'disabled')),\n  state_revision INTEGER NOT NULL DEFAULT 0,\n  credential_revision INTEGER NOT NULL DEFAULT 0,\n  last_refresh_revision INTEGER NOT NULL DEFAULT -1,\n  last_used TIMESTAMP,\n  last_error TEXT,\n  \n  daily_quota INTEGER NOT NULL DEFAULT 0,\n  used_today INTEGER NOT NULL DEFAULT 0,\n  quota_reset_at TIMESTAMP NOT NULL,\n  \n  priority INTEGER NOT NULL DEFAULT 0,\n  weight INTEGER NOT NULL DEFAULT 1,\n  \n  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n, request_revision INTEGER NOT NULL DEFAULT 0)"
+  },
+  {
+    "type": "table",
+    "name": "usage_logs",
+    "tbl_name": "usage_logs",
+    "sql": "CREATE TABLE usage_logs (\n  id TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL,\n  upstream_account_id TEXT NOT NULL,\n  \n  timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  model TEXT NOT NULL,\n  provider TEXT NOT NULL,\n  \n  input_tokens INTEGER NOT NULL DEFAULT 0,\n  output_tokens INTEGER NOT NULL DEFAULT 0,\n  \n  success BOOLEAN NOT NULL,\n  error TEXT,\n  \n  latency_ms INTEGER NOT NULL,\n  \n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY (upstream_account_id) REFERENCES upstream_accounts(id) ON DELETE CASCADE\n)"
+  },
+  {
+    "type": "table",
+    "name": "user_daily_quota",
+    "tbl_name": "user_daily_quota",
+    "sql": "CREATE TABLE user_daily_quota (\n        user_id TEXT NOT NULL REFERENCES users(id),\n        day TEXT NOT NULL,\n        used INTEGER NOT NULL CHECK (used >= 0),\n        PRIMARY KEY (user_id, day)\n      )"
+  },
+  {
+    "type": "table",
+    "name": "users",
+    "tbl_name": "users",
+    "sql": "CREATE TABLE users (\n  id TEXT PRIMARY KEY,\n  api_key_hash TEXT UNIQUE NOT NULL,\n  name TEXT NOT NULL,\n  email TEXT UNIQUE NOT NULL,\n  tier TEXT NOT NULL CHECK (tier IN ('free', 'pro')),\n  daily_limit INTEGER NOT NULL DEFAULT 1000,\n  enabled BOOLEAN NOT NULL DEFAULT TRUE,\n  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n)"
+  },
+  {
+    "type": "trigger",
+    "name": "protect_account_usage_history",
+    "tbl_name": "upstream_accounts",
+    "sql": "CREATE TRIGGER protect_account_usage_history\n        BEFORE DELETE ON upstream_accounts\n        WHEN EXISTS (SELECT 1 FROM usage_logs WHERE upstream_account_id = OLD.id)\n        BEGIN SELECT RAISE(ABORT, 'account has usage history'); END"
+  },
+  {
+    "type": "trigger",
+    "name": "protect_user_usage_history",
+    "tbl_name": "users",
+    "sql": "CREATE TRIGGER protect_user_usage_history\n        BEFORE DELETE ON users\n        WHEN EXISTS (SELECT 1 FROM usage_logs WHERE user_id = OLD.id)\n          OR EXISTS (SELECT 1 FROM user_daily_quota WHERE user_id = OLD.id)\n        BEGIN SELECT RAISE(ABORT, 'user has usage history'); END"
+  },
+  {
+    "type": "trigger",
+    "name": "upstream_credential_revision",
+    "tbl_name": "upstream_accounts",
+    "sql": "CREATE TRIGGER upstream_credential_revision AFTER UPDATE OF credentials, credential_type ON upstream_accounts\n        BEGIN UPDATE upstream_accounts SET credential_revision = credential_revision + 1 WHERE id = NEW.id; END"
+  },
+  {
+    "type": "trigger",
+    "name": "upstream_state_revision",
+    "tbl_name": "upstream_accounts",
+    "sql": "CREATE TRIGGER upstream_state_revision AFTER UPDATE OF status, last_error ON upstream_accounts\n        WHEN NEW.request_revision = OLD.request_revision\n        BEGIN UPDATE upstream_accounts SET state_revision = state_revision + 1 WHERE id = NEW.id; END"
+  }
+]

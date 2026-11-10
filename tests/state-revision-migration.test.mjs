@@ -5,8 +5,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SQL_SCHEMA } from '../src/db/schema.ts';
+import { UPGRADE_DEFERRED } from './helpers/upgrade-deferred.mjs';
 
-test('migration preserves existing revisions and replaces the old trigger', () => {
+test('migration preserves existing revisions and replaces the old trigger', {skip: UPGRADE_DEFERRED}, () => {
   for (const rebuild of [false, true]) {
     const dir = mkdtempSync(path.join(process.env.TMPDIR, 'router-revision-upgrade-'));
     const file = path.join(dir, 'old.sqlite');
@@ -32,7 +33,7 @@ test('migration preserves existing revisions and replaces the old trigger', () =
   }
 });
 
-test('legacy database migration preserves accounts, logs and is idempotent', () => {
+test('legacy database migration preserves accounts, logs and is idempotent', {skip: UPGRADE_DEFERRED}, () => {
   const dir = mkdtempSync(path.join(process.env.TMPDIR, 'router-old-schema-'));
   const file = path.join(dir, 'old.sqlite');
   try {

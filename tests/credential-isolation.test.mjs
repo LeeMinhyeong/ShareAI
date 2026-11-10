@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv } from 'node:crypto';
 Object.assign(process.env, { NODE_ENV: 'test', DATABASE_URL: 'sqlite::memory:', ENCRYPTION_KEY: 'a'.repeat(64), ADMIN_API_KEY: 'test-admin-key-'.repeat(3), LOG_LEVEL: 'error', LOG_PRETTY: 'false' });
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const { initDatabase, closeDatabase } = await import('../src/db/client.ts');
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');
 const { UserRepository } = await import('../src/db/repositories/users.ts');

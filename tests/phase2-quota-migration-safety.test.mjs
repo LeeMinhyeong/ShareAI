@@ -6,6 +6,12 @@ import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { SQL_SCHEMA } from '../src/db/schema.ts';
 
+// ADR 0018: start from a provisioned database (attested safety schema incl. 429 v2), as db:init or
+// the offline upgrader would leave it, so the specific legacy validator under test is reached; a
+// legacy database without v2 is refused earlier, at the v2 gate.
+Object.assign(process.env, {NODE_ENV:'test', DATABASE_URL:`sqlite:${join(process.env.TMPDIR, 'never-opened.sqlite')}`, ENCRYPTION_KEY:'a'.repeat(64), ADMIN_API_KEY:'test-admin-key-'.repeat(3), LOG_LEVEL:'error', LOG_PRETTY:'false'});
+const { provisionFreshDatabase } = await import('./helpers/fresh-db.mjs');
+
 test('legacy migration preserves custom account data, index and trigger', () => {
   const dir = mkdtempSync(join(process.env.TMPDIR, 'quota-migration-'));
   const file = join(dir, 'test.db');
@@ -42,10 +48,11 @@ for (const [label, customSql, checkSql, expected] of [
   ['constraint', '', 'SELECT credentials AS value FROM upstream_accounts', 'preserved'],
   ['generated column', 'ALTER TABLE upstream_accounts ADD COLUMN custom_generated TEXT GENERATED ALWAYS AS (credentials) VIRTUAL', 'SELECT custom_generated AS value FROM upstream_accounts', 'preserved'],
 ]) {
-  test(`unsafe legacy ${label} fails closed and rolls back all changes`, () => {
+  test(`unsafe legacy ${label} fails closed and rolls back all changes`, async () => {
     const dir = mkdtempSync(join(process.env.TMPDIR, 'quota-migration-rollback-'));
     const file = join(dir, 'test.db');
     try {
+      await provisionFreshDatabase(file);
       let db = new Database(file);
       let schema = SQL_SCHEMA.replace(", 'oauth'", '').replace('  meta TEXT,\n', '').replace('  quota_info TEXT,\n', '');
       if (label === 'constraint') schema = schema.replace('credentials TEXT NOT NULL,', "credentials TEXT NOT NULL CHECK (length(credentials) > 0),");

@@ -75,7 +75,9 @@ function codexIdentity(idToken?: string | null, accessToken?: string | null) {
   return {
     email: (id.email ?? access['https://api.openai.com/profile']?.email ?? null) as string | null,
     plan: (auth.chatgpt_plan_type ?? null) as string | null,
-    accountId: (auth.chatgpt_account_id ?? null) as string | null,
+    // Account claim fallback follows opencodex src/oauth/chatgpt-shared.ts;
+    // see THIRD_PARTY_OPENCODEX_LICENSE.txt. Do not infer from organizations.
+    accountId: (auth.chatgpt_account_id ?? access['https://api.openai.com/auth']?.chatgpt_account_id ?? null) as string | null,
     expiresAt: toMs(access.exp),
   };
 }
@@ -125,7 +127,8 @@ export function parseImportedCredential(provider: OAuthProvider, input: string):
     }
     const obj = tryJson(text);
     const o = obj?.claudeAiOauth ?? obj;
-    if (o && typeof o.accessToken === 'string') {
+    if (o && typeof o.accessToken === 'string' && /^[A-Za-z0-9._~+/-]+=*$/.test(o.accessToken) &&
+        (o.refreshToken == null || (typeof o.refreshToken === 'string' && o.refreshToken.trim().length > 0))) {
       return build(
         {
           kind: 'oauth',
@@ -147,17 +150,21 @@ export function parseImportedCredential(provider: OAuthProvider, input: string):
   }
   const obj = tryJson(text);
   const t = obj?.tokens ?? obj;
-  const access = t?.access_token ?? t?.accessToken;
+  // Adapted from OmniRoute codexAuthImport.ts; see THIRD_PARTY_OMNIROUTE_LICENSE.txt.
+  // Nested fields take precedence, with flat fields as a per-field fallback.
+  const pickToken = (snake: string, camel: string) =>
+    t?.[snake] ?? t?.[camel] ?? obj?.[snake] ?? obj?.[camel];
+  const access = pickToken('access_token', 'accessToken');
   if (typeof access === 'string') {
-    const idToken = t.id_token ?? t.idToken ?? null;
+    const idToken = pickToken('id_token', 'idToken') ?? null;
     const ident = codexIdentity(idToken, access);
     return build(
       {
         kind: 'oauth',
         accessToken: access,
-        refreshToken: t.refresh_token ?? t.refreshToken ?? null,
+        refreshToken: pickToken('refresh_token', 'refreshToken') ?? null,
         idToken,
-        accountId: t.account_id ?? t.accountId ?? ident.accountId,
+        accountId: pickToken('account_id', 'accountId') ?? ident.accountId,
         expiresAt: ident.expiresAt,
       },
       { source: 'codex_auth_json', email: ident.email, plan: ident.plan }
@@ -198,6 +205,9 @@ export async function refreshTokens(provider: OAuthProvider, creds: OAuthCredent
   if (!creds.refreshToken) throw new RefreshError('refresh token 없음 (재로그인 필요)', true);
 
   const isClaude = provider === 'anthropic';
+  // expires_in is a lifetime, not a receipt-time deadline. Anchor it before
+  // the exchange so transport and response-body delays cannot extend validity.
+  const refreshStartedAt = Date.now();
   const res = await fetch(isClaude ? CLAUDE_OAUTH.tokenUrl : CODEX_OAUTH.tokenUrl, {
     signal: AbortSignal.timeout(10_000),
     method: 'POST',
@@ -244,7 +254,7 @@ export async function refreshTokens(provider: OAuthProvider, creds: OAuthCredent
   const nonempty = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
   if ((has('refresh_token') && !nonempty(j.refresh_token)) ||
       (has('id_token') && !nonempty(j.id_token)) ||
-      (has('expires_in') && (typeof j.expires_in !== 'number' || !Number.isFinite(j.expires_in) || j.expires_in <= 0 || !Number.isSafeInteger(Date.now() + j.expires_in * 1000)))) {
+      (has('expires_in') && (typeof j.expires_in !== 'number' || !Number.isFinite(j.expires_in) || j.expires_in <= 0 || !Number.isSafeInteger(refreshStartedAt + j.expires_in * 1000)))) {
     throw new RefreshError('토큰 응답이 올바르지 않습니다.', false);
   }
   const next: OAuthCredentials = {
@@ -253,7 +263,7 @@ export async function refreshTokens(provider: OAuthProvider, creds: OAuthCredent
     // Omission can mean the provider retained the old token, but it might have
     // consumed it. Never automatically reuse a token after an uncertain rotation.
     refreshToken: has('refresh_token') ? j.refresh_token : null,
-    expiresAt: has('expires_in') ? Date.now() + j.expires_in * 1000 : null,
+    expiresAt: has('expires_in') ? refreshStartedAt + j.expires_in * 1000 : null,
   };
   if (!isClaude) {
     if (has('id_token')) next.idToken = j.id_token;
@@ -292,30 +302,72 @@ const flows = new Map<string, LoginFlow>();
 let callbackServer: http.Server | null = null;
 let callbackStarting: Promise<boolean> | null = null;
 let callbackClosing: Promise<void> | null = null;
+// Keep the settled attempt observable while startup and shutdown interleave.
+let callbackLastClose: Promise<void> | null = null;
 let closingServer: http.Server | null = null;
 let oauthStopping = false;
+let oauthStop: Promise<void> | null = null;
+let callbackConnectionsCloseFailed = false;
 const oauthOperations = new Set<Promise<void>>();
 const oauthAbort = new AbortController();
 
 function closeCallbackServer(): void {
-  if (!callbackServer) return;
-  const server = callbackServer;
+  if (callbackClosing) return;
+  const server = closingServer ?? callbackServer;
+  if (!server) return;
   callbackServer = null;
   closingServer = server;
-  callbackClosing = new Promise<void>(resolve => server.close(() => resolve())).finally(() => {
-    closingServer = null;
-    callbackClosing = null;
+  // Defer the call until the in-flight promise is published, including for
+  // synchronous throws or reentrant close implementations.
+  const closing = Promise.resolve().then(() => new Promise<void>((resolve, reject) => {
+    try {
+      server.close(err => err ? reject(new Error('OAuth callback listener close failed')) : resolve());
+    } catch {
+      reject(new Error('OAuth callback listener close failed'));
+    }
+  }));
+  callbackClosing = closing;
+  callbackLastClose = closing;
+  // A failed close leaves ownership uncertain: retain the exact server for an
+  // explicit retry and never allow another listener to replace it.
+  void closing.then(() => {
+    if (callbackClosing === closing && closingServer === server) { callbackClosing = null; closingServer = null; }
+  }, () => {
+    if (callbackClosing === closing && closingServer === server) callbackClosing = null;
   });
 }
 
 export function stopOAuth(): Promise<void> {
+  if (oauthStop) return oauthStop;
+  let resolveStop!: () => void;
+  let rejectStop!: (reason: unknown) => void;
+  const attempt = new Promise<void>((resolve, reject) => { resolveStop = resolve; rejectStop = reject; });
+  oauthStop = attempt;
+  // Publish before abort listeners or connection hooks can reenter stopOAuth.
+  void attempt.catch(() => { if (oauthStop === attempt) oauthStop = null; });
   oauthStopping = true;
-  oauthAbort.abort();
-  flows.clear();
-  onTokens = null;
-  closeCallbackServer();
-  closingServer?.closeAllConnections();
-  return Promise.allSettled([...oauthOperations]).then(() => undefined);
+  try {
+    oauthAbort.abort();
+    flows.clear();
+    onTokens = null;
+    callbackConnectionsCloseFailed = false;
+    closeCallbackServer();
+    try { closingServer?.closeAllConnections(); } catch { callbackConnectionsCloseFailed = true; }
+    const starting = callbackStarting;
+    void (async () => {
+      // A listen already in progress can install and close its server later.
+      const startResult = starting ? await Promise.allSettled([starting]) : [];
+      const closing = callbackClosing ?? callbackLastClose;
+      const results = await Promise.allSettled([...oauthOperations, ...(closing ? [closing] : [])]);
+      if (startResult.some(result => result.status === 'rejected') || callbackConnectionsCloseFailed || closingServer ||
+          (closing && results[results.length - 1].status === 'rejected')) {
+        throw new Error('OAuth callback listener close failed');
+      }
+    })().then(resolveStop, rejectStop);
+  } catch (error) {
+    rejectStop(error);
+  }
+  return attempt;
 }
 
 /** 로그인 완료 시 계정 생성 콜백 (routes/admin 에서 주입) */
@@ -406,7 +458,7 @@ export function getFlow(flowId: string) {
  *  ChatGPT: 자동 콜백이 실패했을 때 주소창의 http://localhost:1455/auth/callback?code=... URL 전체
  */
 export async function finishLogin(flowId: string, input: string) {
-  cleanupFlows();
+  try { cleanupFlows(); } catch { throw new Error('로그인을 완료하지 못했습니다. 다시 시도해주세요.'); }
   const flow = flows.get(flowId);
   if (!flow) throw new Error('로그인 세션이 만료되었거나 없습니다. 처음부터 다시 시도해주세요.');
   if (flow.status !== 'pending') throw new Error('로그인 세션이 이미 사용 중이거나 종료되었습니다.');
@@ -414,7 +466,8 @@ export async function finishLogin(flowId: string, input: string) {
   let code = (input || '').trim();
   let state = '';
   if (code.startsWith('http')) {
-    const u = new URL(code);
+    let u: URL;
+    try { u = new URL(code); } catch { throw new Error('잘못된 콜백 URL입니다.'); }
     code = u.searchParams.get('code') || '';
     if (flow.provider !== 'openai' || u.origin !== 'http://localhost:1455' || u.pathname !== CODEX_OAUTH.callbackPath) throw new Error('잘못된 콜백 URL입니다.');
     state = u.searchParams.get('state') || '';
@@ -427,34 +480,56 @@ export async function finishLogin(flowId: string, input: string) {
   if (state !== flow.state) throw new Error('state 값이 일치하지 않습니다. 이 로그인 세션에서 받은 코드인지 확인해주세요.');
 
   await completeFlow(flow, code);
-  return getFlow(flowId)!;
+  // The callback may have committed even if shutdown cleared the flow map.
+  return { id: flow.id, provider: flow.provider, status: flow.status, error: flow.error, accountId: flow.accountId };
 }
 
 function completeFlow(flow: LoginFlow, code: string): Promise<void> {
   if (oauthStopping) return Promise.reject(new Error('OAuth is shutting down'));
-  const operation = runCompleteFlow(flow, code);
+  let resolveOperation!: () => void;
+  let rejectOperation!: (reason: unknown) => void;
+  const operation = new Promise<void>((resolve, reject) => { resolveOperation = resolve; rejectOperation = reject; });
+  // Publish before the exchange or any dependency can synchronously reenter stopOAuth.
   oauthOperations.add(operation);
   void operation.then(() => oauthOperations.delete(operation), () => oauthOperations.delete(operation));
+  try {
+    void runCompleteFlow(flow, code).then(resolveOperation, rejectOperation);
+  } catch (error) {
+    rejectOperation(error);
+  }
   return operation;
 }
 
 async function runCompleteFlow(flow: LoginFlow, code: string) {
-  cleanupFlows();
-  if (flows.get(flow.id) !== flow || flow.status !== 'pending') throw new Error('로그인 세션이 만료되었거나 이미 사용되었습니다.');
-  flow.status = 'processing';
+  let invalidSession = false;
+  let processing = false;
   try {
-    const parsed = flow.provider === 'anthropic' ? await exchangeClaude(flow, code) : await exchangeCodex(flow, code);
-    if (oauthStopping || flows.get(flow.id) !== flow || Date.now() - flow.createdAt >= FLOW_TTL_MS) throw new Error('로그인 세션이 만료되었습니다.');
-    if (!onTokens) throw new Error('login handler not registered');
-    flow.accountId = await onTokens(flow, parsed);
-    flow.status = 'done';
-  } catch (e: any) {
-    flow.status = 'error';
-    flow.error = '로그인을 완료하지 못했습니다. 다시 시도해주세요.';
-    throw new Error(flow.error);
-  } finally {
     cleanupFlows();
+    if (flows.get(flow.id) !== flow || flow.status !== 'pending') {
+      invalidSession = true;
+    } else {
+      flow.status = 'processing';
+      processing = true;
+      const parsed = flow.provider === 'anthropic' ? await exchangeClaude(flow, code) : await exchangeCodex(flow, code);
+      if (oauthStopping || flows.get(flow.id) !== flow || Date.now() - flow.createdAt >= FLOW_TTL_MS) throw new Error('로그인 세션이 만료되었습니다.');
+      if (!onTokens) throw new Error('login handler not registered');
+      flow.accountId = await onTokens(flow, parsed);
+      flow.status = 'done';
+    }
+  } catch {
+    const message = '로그인을 완료하지 못했습니다. 다시 시도해주세요.';
+    if (processing) {
+      flow.status = 'error';
+      flow.error = message;
+    }
+    throw new Error(message);
+  } finally {
+    // A failed sweep is retried on the next flow operation or TTL timer; stopOAuth
+    // also clears all flows. Never mask a failure or turn a saved account into a
+    // retryable failure after onTokens has succeeded.
+    try { cleanupFlows(); } catch { /* best effort */ }
   }
+  if (invalidSession) throw new Error('로그인 세션이 만료되었거나 이미 사용되었습니다.');
 }
 
 async function exchangeClaude(flow: LoginFlow, code: string): Promise<ParsedCredential> {
@@ -474,7 +549,19 @@ async function exchangeClaude(flow: LoginFlow, code: string): Promise<ParsedCred
   const text = await res.text();
   if (!res.ok) throw new Error(`Claude 토큰 교환 실패 (${res.status})`);
   const t = JSON.parse(text);
-  if (typeof t.access_token !== 'string' || !t.access_token) throw new Error('토큰 응답이 올바르지 않습니다.');
+  if (typeof t?.access_token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(t.access_token)) throw new Error('토큰 응답이 올바르지 않습니다.');
+  // Apply the existing refresh-response validation policy before using or storing credentials.
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(t, key);
+  const nonempty = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  if ((has('token_type') && (typeof t.token_type !== 'string' || !/^Bearer$/i.test(t.token_type))) ||
+      (has('refresh_token') && !nonempty(t.refresh_token)) ||
+      (has('id_token') && !nonempty(t.id_token)) ||
+      (has('expires_in') && (typeof t.expires_in !== 'number' || !Number.isFinite(t.expires_in) || t.expires_in <= 0 || !Number.isSafeInteger(Date.now() + t.expires_in * 1000)))) {
+    throw new Error('토큰 응답이 올바르지 않습니다.');
+  }
+
+  // Do not start the optional bootstrap after shutdown, even if fetch ignored abort.
+  if (oauthStopping) throw new Error('OAuth is shutting down');
 
   // 이메일/플랜 조회 (실패해도 무시)
   let email: string | null = t.account?.email_address ?? null;
@@ -542,6 +629,7 @@ async function exchangeCodex(flow: LoginFlow, code: string): Promise<ParsedCrede
  */
 function ensureCodexCallbackServer(): Promise<boolean> {
   if (oauthStopping) return Promise.resolve(false);
+  if (closingServer && !callbackClosing) closeCallbackServer();
   if (callbackClosing) return callbackClosing.then(() => ensureCodexCallbackServer());
   if (callbackServer) return Promise.resolve(true);
   if (callbackStarting) return callbackStarting;
@@ -579,8 +667,9 @@ function ensureCodexCallbackServer(): Promise<boolean> {
     });
     server.listen(CODEX_OAUTH.callbackPort, '127.0.0.1', () => {
       if (oauthStopping) {
-        server.close();
-        server.closeAllConnections();
+        callbackServer = server;
+        closeCallbackServer();
+        try { server.closeAllConnections(); } catch { callbackConnectionsCloseFailed = true; }
         resolve(false);
         return;
       }

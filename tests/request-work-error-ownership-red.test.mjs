@@ -1,0 +1,31 @@
+// Real Express router; synthetic request/response, no sockets or storage.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import vm from 'node:vm';
+const require = createRequire(import.meta.url), ts = require('typescript');
+const code = ts.transpileModule(readFileSync(new URL('../src/request-work.ts', import.meta.url), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+const exports = {};
+vm.runInThisContext(`(function(exports,require){${code}\n})`)(exports, require);
+test('an unrelated wrapper with the same request cannot consume a deferred error dispatch', { timeout: 2000 }, async () => {
+  const manager = new exports.RequestWorkManager(), router = require('express').Router();
+  const req = { method:'GET', url:'/' }, statuses = [];
+  const res = {status(n){statuses.push(n);return this},json(){return this}};
+  let actual = 0, unrelated = 0, release, reached;
+  const gate = new Promise(resolve => { release = resolve; });
+  const dispatched = new Promise(resolve => { reached = resolve; });
+  const real = exports.trackedErrorHandler(() => { actual++; reached(); }, manager);
+  const imposter = exports.trackedErrorHandler(() => { unrelated++; }, manager);
+  router.use((_req,_res,next) => next(Error('synthetic')));
+  router.use((err,_req,_res,next) => next(err));
+  manager.ownedDispatch(scope => { void gate.then(() => router.handle(req,res,err => scope.forwardError(err, wrapped => { real(wrapped,req,res,()=>{}); reached(); }))); });
+  const drain = manager.stopAndDrain();
+  imposter(Error('unrelated'),req,res,()=>{});
+  release();
+  await dispatched;
+  await Promise.race([drain, new Promise((_, reject) => setTimeout(() => reject(Error('owned dispatch did not drain')), 100))]);
+  assert.equal(unrelated, 0, 'unrelated wrapper must not claim owned error continuation');
+  assert.equal(actual, 1, 'deferred real error handler must remain admitted');
+  assert.deepEqual(statuses, [503]);
+});

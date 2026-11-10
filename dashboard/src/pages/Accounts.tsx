@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Plus, Pencil, Trash2, RefreshCw } from 'lucide-react'
 import SubscriptionOnboarding from './SubscriptionOnboarding'
+import OfficialChatGPT from './OfficialChatGPT'
+import RoutingSnapshot from './RoutingSnapshot'
 
 const API_BASE = 'http://localhost:20101'
 
@@ -122,6 +124,8 @@ export default function Accounts({ adminKey, onUpdate }: { adminKey: string; onU
         </button>
       </div>
 
+      <RoutingSnapshot adminKey={adminKey} />
+      <OfficialChatGPT adminKey={adminKey} onUpdate={onUpdate} />
       <SubscriptionOnboarding adminKey={adminKey} onUpdate={() => { fetchAccounts(); onUpdate() }} />
       <div className="table-container">
         <div className="table-header">
@@ -137,7 +141,7 @@ export default function Accounts({ adminKey, onUpdate }: { adminKey: string; onU
               <th>제공자</th>
               <th>인증방식</th>
               <th>상태</th>
-              <th>사용량</th>
+              <th>기존 성공 기록 / 설정 한도</th>
               <th>우선순위</th>
               <th>가중치</th>
               <th>마지막 사용</th>
@@ -156,16 +160,8 @@ export default function Accounts({ adminKey, onUpdate }: { adminKey: string; onU
                   </span>
                 </td>
                 <td>
-                  <div style={{ width: 100 }}>
-                    <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      {account.usedToday} / {account.dailyQuota === 0 ? '∞' : account.dailyQuota}
-                    </div>
-                    <div className="progress-bar">
-                      <div 
-                        className={`progress-fill ${account.dailyQuota > 0 && account.usedToday / account.dailyQuota > 0.8 ? 'danger' : ''}`}
-                        style={{ width: account.dailyQuota > 0 ? `${Math.min(100, (account.usedToday / account.dailyQuota) * 100)}%` : '0%' }}
-                      />
-                    </div>
+                  <div style={{ fontSize: 12 }} title="성공 기록은 UTC 일일 예약량이 아니며 일일 초기화가 보장되지 않습니다">
+                    성공 기록 {account.usedToday}<br />설정 한도 {account.dailyQuota === 0 ? '∞' : account.dailyQuota}<br />실제 예약량 미표시
                   </div>
                 </td>
                 <td>{account.priority}</td>
@@ -220,7 +216,7 @@ export default function Accounts({ adminKey, onUpdate }: { adminKey: string; onU
                 </div>
                 <div className="form-group">
                   <label>자격증명 {editing && '(비워두면 기존 값 유지)'}</label>
-                  <input value={form.credentials} onChange={e => setForm({...form, credentials: e.target.value})} placeholder={editing ? "••••••••" : "세션 토큰 또는 쿠키"} />
+                  <input type="password" autoComplete="off" value={form.credentials} onChange={e => setForm({...form, credentials: e.target.value})} placeholder={editing ? "••••••••" : "세션 토큰 또는 쿠키"} />
                 </div>
                 <div className="form-row">
                   <div className="form-group">

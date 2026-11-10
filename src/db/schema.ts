@@ -77,14 +77,17 @@ export interface AccountPoolRule {
 export interface UsageLog {
   id: string;
   userId: string;
-  upstreamAccountId: string;
+  upstreamAccountId: string | null;
+  accountKind: 'upstream' | 'siwc';
+  accountId: string;
   
   timestamp: Date;
   model: string;
   provider: string;
   
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  usageKnown: boolean;
   
   success: boolean;
   error: string | null;
@@ -161,13 +164,18 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   model TEXT NOT NULL,
   provider TEXT NOT NULL,
   
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  usage_known INTEGER CHECK (usage_known IS NULL OR usage_known IN (0, 1)),
   
   success BOOLEAN NOT NULL,
   error TEXT,
   
   latency_ms INTEGER NOT NULL,
+
+  CHECK ((input_tokens IS NULL AND output_tokens IS NULL AND usage_known IS 0) OR
+    (typeof(input_tokens) = 'integer' AND typeof(output_tokens) = 'integer' AND input_tokens >= 0 AND output_tokens >= 0 AND input_tokens <= 9007199254740991 AND output_tokens <= 9007199254740991 AND input_tokens + output_tokens <= 9007199254740991 AND usage_known IS 1) OR
+    (usage_known IS NULL AND typeof(input_tokens) = 'integer' AND typeof(output_tokens) = 'integer')),
   
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (upstream_account_id) REFERENCES upstream_accounts(id) ON DELETE CASCADE
@@ -184,3 +192,20 @@ CREATE INDEX IF NOT EXISTS idx_usage_logs_user_timestamp ON usage_logs(user_id, 
 CREATE INDEX IF NOT EXISTS idx_usage_logs_account_timestamp ON usage_logs(upstream_account_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_upstream_accounts_status ON upstream_accounts(status, provider);
 `;
+
+/** Fail closed until the explicitly offline legacy-history migration exists. */
+export function assertTokenUsageSchema(db: import('better-sqlite3').Database, allowAbsent = false): void {
+  const unsafe = (): never => { throw new Error('Incompatible usage_logs schema; offline token-usage migration is not yet available'); };
+  if (db.prepare("SELECT 1 FROM temp.sqlite_schema WHERE name = 'usage_logs' COLLATE NOCASE").get()) unsafe();
+  const actual = db.prepare("SELECT type, name, sql FROM main.sqlite_schema WHERE name = 'usage_logs' COLLATE NOCASE").get() as {type:string;name:string;sql:string} | undefined;
+  if (!actual) {
+    // Provisioning may precede the application schema, but an established
+    // application database with missing history must not silently recreate it.
+    if (allowAbsent && !db.prepare("SELECT 1 FROM main.sqlite_schema WHERE name COLLATE NOCASE IN ('users','upstream_accounts')").get()) return;
+    return unsafe();
+  }
+  const expected = SQL_SCHEMA.match(/CREATE TABLE IF NOT EXISTS usage_logs \([\s\S]*?\n\);/)?.[0].replace('CREATE TABLE IF NOT EXISTS', 'CREATE TABLE').replace(/;$/, '');
+  const normalized = (s: string) => s.replace(/\s+/g, ' ').trim();
+  if (!expected || actual.type !== 'table' || actual.name !== 'usage_logs' || !actual.sql || normalized(actual.sql) !== normalized(expected)) unsafe();
+}
+

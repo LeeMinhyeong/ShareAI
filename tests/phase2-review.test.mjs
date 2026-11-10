@@ -2,12 +2,14 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createCipheriv } from 'node:crypto';
+import {responseStream, responseStreamWithUsage} from './phase4-protocol-fixtures.mjs';
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL = 'sqlite::memory:';
 process.env.ENCRYPTION_KEY = 'a'.repeat(64);
 process.env.ADMIN_API_KEY = 'test-admin-key-'.repeat(3);
 process.env.LOG_LEVEL = 'error';
 process.env.LOG_PRETTY = 'false';
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const { initDatabase, closeDatabase } = await import('../src/db/client.ts');
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');
 const { UserRepository } = await import('../src/db/repositories/users.ts');
@@ -16,6 +18,7 @@ const { default: router } = await import('../src/routes/admin.ts');
 const { authenticateUser } = await import('../src/auth/user-auth.ts');
 const { hashApiKey } = await import('../src/utils/encryption.ts');
 const { accountPool } = await import('../src/account-pool/manager.ts');
+(await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
 const { forwardChat } = await import('../src/upstream/forward-chat.ts');
 const db = initDatabase();
 const accounts = new AccountRepository(), users = new UserRepository(), logs = new UsageLogRepository();
@@ -78,7 +81,7 @@ test('successful completion without usage retains the reservation', async () => 
   const a = accounts.create({name:'no-usage',provider:'openai',credentialType:'oauth',credentials:JSON.stringify({kind:'oauth',accessToken:'key',accountId:'workspace'})});
   const select = accountPool.selectAccount, fetch = globalThis.fetch;
   accountPool.selectAccount = async () => a;
-  globalThis.fetch = async () => new Response('data: {"type":"response.completed","response":{"id":"r"}}\n\n',{headers:{'content-type':'text/event-stream'}});
+  globalThis.fetch = async () => new Response(responseStream,{headers:{'content-type':'text/event-stream'}});
   const res = new EventEmitter(); res.json = body => {res.body = body}; res.status = code => {res.statusCode = code; return res};
   try {
     assert.equal(users.reserveDailyQuota(u.apiKeyHash).allowed,true);
@@ -92,7 +95,7 @@ test('usage log write failure does not erase an existing reservation', async () 
   const a = accounts.create({name:'failure',provider:'openai',credentialType:'oauth',credentials:JSON.stringify({kind:'oauth',accessToken:'key',accountId:'workspace'})});
   const select = accountPool.selectAccount, fetch = globalThis.fetch;
   accountPool.selectAccount = async () => a;
-  globalThis.fetch = async () => new Response('data: {"type":"response.completed","response":{"id":"r","usage":{"input_tokens":1,"output_tokens":1}}}\n\n',{headers:{'content-type':'text/event-stream'}});
+  globalThis.fetch = async () => new Response(responseStreamWithUsage({input_tokens:1,output_tokens:1,total_tokens:2}),{headers:{'content-type':'text/event-stream'}});
   db.exec("CREATE TEMP TRIGGER fail_usage BEFORE INSERT ON usage_logs BEGIN SELECT RAISE(ABORT, 'injected failure'); END");
   const res = new EventEmitter(); res.json = body => {res.body = body}; res.status = code => {res.statusCode = code; return res};
   try {

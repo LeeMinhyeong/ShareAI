@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, CreditCard, Activity, Settings, BarChart3, Plus, RefreshCw } from 'lucide-react'
+import { Users, CreditCard, Activity, BarChart3, RefreshCw } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Accounts from './pages/Accounts'
 import UsersPage from './pages/Users'
@@ -10,6 +10,7 @@ const API_BASE = 'http://localhost:20101'
 type Page = 'dashboard' | 'accounts' | 'users' | 'stats'
 
 interface Stats {
+  todayUsage: { totalRequests: number; successRequests: number }
   users: { total: number; enabled: number; free: number; pro: number }
   accounts: { total: number; byProvider: Record<string, number>; byStatus: Record<string, number> }
 }

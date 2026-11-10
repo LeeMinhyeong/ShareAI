@@ -6,9 +6,25 @@ import express from 'express';
 import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { stopOAuth } from './upstream/oauth.js';
+import { stopSiwc, noStoreSiwc } from './upstream/siwc-login.js';
 import { drainTokenRefreshes } from './upstream/tokens.js';
+import { requestWork, trackedErrorHandler } from './request-work.js';
 
 const app = express();
+let ready = false;
+// Set before the JSON parser so even malformed or oversized requests are private.
+app.all(['/admin/routing-snapshot', '/api/admin/routing-snapshot'], (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+app.use('/admin/accounts/siwc', noStoreSiwc);
+app.use('/admin/siwc', noStoreSiwc);
+// A bound socket is not ready to serve until DB initialization and scheduler
+// startup have completed. Keep this ahead of parsers and application routes.
+app.use((_req, res, next) => {
+  if (!ready) return res.status(503).end();
+  next();
+});
 
 // CORS
 if (env.CORS_ORIGIN) {
@@ -43,13 +59,22 @@ app.get('/metrics', (req, res) => {
 });
 
 // 데이터베이스 초기화
-import { initDatabase, closeDatabase } from './db/client.js';
+import { initDatabase, requireInitializedDatabase } from './db/client.js';
+import { assert429V2Schema } from './db/account-429-v2-store.js';
+import { Account429V2Expiry } from './db/account-429-v2-expiry.js';
 
 // API 라우트
 import v1Router from './routes/v1.js';
 import adminRouter from './routes/admin.js';
 
 app.use('/v1', v1Router);
+// Only this dashboard endpoint has a same-origin /api alias. Route it through
+// the existing admin router so its authentication remains authoritative.
+app.get('/api/admin/routing-snapshot', (req, _res, next) => {
+  const queryIndex = req.url.indexOf('?');
+  req.url = '/admin/routing-snapshot' + (queryIndex < 0 ? '' : req.url.slice(queryIndex));
+  next();
+});
 app.use('/admin', adminRouter);
 
 // 404 핸들러
@@ -63,7 +88,7 @@ app.use((req, res) => {
 });
 
 // 에러 핸들러
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+app.use(trackedErrorHandler((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err instanceof SyntaxError && 'type' in err && err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: { type: 'invalid_request', message: 'Invalid JSON' } });
   }
@@ -81,59 +106,159 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
       message: env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
     },
   });
-});
+}));
 
 // 서버 시작
-const server = app.listen(env.PORT, env.HOST, () => {
-  try {
-    initDatabase();
-  } catch (err) {
-    logger.error({ err }, 'Database initialization failed');
-    closeDatabase();
-    process.exitCode = 1;
-    server.close();
-    return;
-  }
-  logger.info(
-    {
-      port: env.PORT,
-      host: env.HOST,
-      env: env.NODE_ENV,
-    },
-    '🚀 Multi-Account Router started'
-  );
-  
-  logger.info('📖 See 다계정-라우터-설계.md for architecture and implementation guide');
-});
-
-// Stop accepting requests, then close the database after active requests drain.
+let deadlineFired = false;
+let expiry: Account429V2Expiry | undefined;
+let server: ReturnType<typeof app.listen> | undefined;
+let startupFailed = false;
+let shutdownDeadline: ReturnType<typeof setTimeout> | undefined;
 let shuttingDown = false;
-function shutdown(signal: string): void {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  logger.info({ signal }, 'Shutting down gracefully');
-  const oauthDrained = stopOAuth();
-  const refreshesDrained = drainTokenRefreshes();
-  const deadline = setTimeout(() => {
-    logger.error('Shutdown deadline exceeded; terminating remaining work');
-    server.closeAllConnections();
-    try { closeDatabase(); } catch (err) { logger.error({ err }, 'Failed to close database'); }
-    process.exit(1);
-  }, 5000);
-  server.close(async (err) => {
-    await Promise.all([refreshesDrained, oauthDrained]);
-    clearTimeout(deadline);
-    if (err) {
-      logger.error({ err }, 'Failed to close HTTP server');
-      process.exitCode = 1;
-    }
+let deadlineExited = false;
+let startupStarted = false;
+function armShutdownDeadline(): void {
+  if (shutdownDeadline) return;
+  shutdownDeadline = setTimeout(() => {
+    if (deadlineExited) return;
+    deadlineExited = true;
+    deadlineFired = true;
+    process.exitCode = 1;
     try {
-      closeDatabase();
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to close database');
-      process.exitCode = 1;
+      try { logger.error('Shutdown deadline exceeded; terminating remaining work'); } catch { /* best effort */ }
+      try { server?.closeAllConnections(); } catch { /* best effort */ }
+    } finally {
+      // Pending work may still use the database; process termination releases it.
+      process.exit(1);
+    }
+  }, 5000);
+}
+function failStartup(message: string): void {
+  ready = false;
+  if (startupFailed) return;
+  startupFailed = true;
+  deadlineFired = true;
+  // A fatal error cannot prove all database producers drained, even before
+  // listening. Retain the database until bounded process termination.
+  armShutdownDeadline();
+  process.exitCode = 1;
+  // Normal shutdown has already started the same admission barriers.
+  if (!shuttingDown) {
+    // Handle throws and rejections without logging until both admissions are shut.
+    const stop = (fn: () => unknown): void => {
+      try { void Promise.resolve(fn()).catch(() => {}); } catch { /* best effort */ }
+    };
+    stop(() => requestWork.stopAndDrain());
+    stop(() => drainTokenRefreshes());
+    stop(() => expiry?.stopAndDrain());
+    // A listener error can arrive after startup while separate OAuth/SIWC
+    // callback servers or admitted operations are still active. Start their
+    // own stop paths as well; the referenced hard deadline remains decisive.
+    stop(() => stopOAuth());
+    stop(() => stopSiwc());
+    stop(() => server?.close());
+  }
+  try { logger.error(message); } catch { /* best effort */ }
+}
+try {
+  server = app.listen(env.PORT, env.HOST, () => {
+    if (startupStarted || deadlineFired || startupFailed || shuttingDown) return;
+    startupStarted = true;
+    try {
+      initDatabase();
+      if (deadlineFired || startupFailed || shuttingDown) return;
+      assert429V2Schema(requireInitializedDatabase());
+      if (deadlineFired || startupFailed || shuttingDown) return;
+      expiry = new Account429V2Expiry({
+        onFailure: () => { try { logger.error('429 expiry scheduler failed'); } catch { /* best effort */ } },
+        monotonic: () => process.hrtime.bigint(),
+        setTimer: (fn, delay) => { const timer = setTimeout(fn, delay); timer.unref(); return timer; },
+        clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        intervalMs: 1000,
+        maxObservations: 1024,
+        scanBatch: 256,
+      });
+      if (deadlineFired || startupFailed || shuttingDown) return;
+      expiry.start();
+      if (deadlineFired || startupFailed || shuttingDown) return;
+      ready = true;
+      logger.info({port: env.PORT, host: env.HOST, env: env.NODE_ENV}, '🚀 Multi-Account Router started');
+      logger.info('📖 See 다계정-라우터-설계.md for architecture and implementation guide');
+    } catch {
+      failStartup('Server startup failed');
     }
   });
+  server.on('error', () => failStartup('HTTP listener failed'));
+} catch {
+  failStartup('Server startup failed');
+}
+
+// The request-work barrier is additive: parser/admin callbacks and forwarding
+// internals are not all owned by it, so this is not a complete producer drain.
+function shutdown(signal: string): void {
+  ready = false;
+  if (startupFailed) return;
+  if (shuttingDown) return;
+  shuttingDown = true;
+  // Process shutdown is capped at 5s while the event loop runs. SIWC's own
+  // independent 15s guard is for other callers; this server does not retry it.
+  // On timeout, terminate without closing a database pending work might use.
+  armShutdownDeadline();
+  const failure = (message: string): void => {
+    process.exitCode = 1;
+    try { logger.error(message); } catch { /* best effort */ }
+  };
+  // Attach rejection handlers immediately, including if a later stop throws.
+  const startDrain = (stop: () => Promise<unknown>, message: string): Promise<boolean> => {
+    try {
+      return Promise.resolve(stop()).then(() => true, () => { failure(message); return false; });
+    } catch {
+      // Defer failure logging until both admission barriers have been started.
+      return Promise.resolve().then(() => { failure(message); return false; });
+    }
+  };
+  // Close both admissions before any external logger or stop hook can reenter.
+  // Already-owned work and token flights may still finish.
+  const requestDrain = startDrain(() => requestWork.stopAndDrain(), 'Failed to drain request work');
+  const tokenDrain = startDrain(drainTokenRefreshes, 'Failed to drain token refreshes');
+  const expiryDrain = startDrain(() => expiry ? expiry.stopAndDrain() : Promise.resolve(), 'Failed to drain 429 expiry scheduler');
+  try { logger.info({ signal }, 'Shutting down gracefully'); }
+  catch { failure('Failed to log shutdown'); }
+
+  // One explicit retry can close a listener retained after a failed close.
+  // Keep the original failure status even if the second attempt succeeds.
+  // The deadline remains armed throughout, and no retry starts after it fires.
+  const oauthDrain = startDrain(stopOAuth, 'Failed to stop OAuth').then(ok => {
+    if (ok || deadlineFired) return ok;
+    return startDrain(stopOAuth, 'Failed to retry stopping OAuth').then(() => false);
+  });
+  const drains = [
+    requestDrain,
+    oauthDrain,
+    startDrain(stopSiwc, 'Failed to stop SIWC'),
+    tokenDrain,
+    expiryDrain,
+  ];
+  try {
+    if (!server) return;
+    server.close((err) => {
+      if (deadlineFired) return;
+      if (err) failure('Failed to close HTTP server');
+      void Promise.all(drains).then((results) => {
+        // A failed drain or HTTP close does not establish that work is finished.
+        if (deadlineFired || err || results.some(result => !result)) return;
+        // The registered drains do not cover every possible DB producer yet.
+        // Retain both the singleton and quarantined connections until process
+        // exit rather than closing them underneath an untracked continuation.
+        // The deadline still fires if other work keeps the process alive, but
+        // does not itself prevent an otherwise idle process from exiting.
+        try { shutdownDeadline?.unref(); }
+        catch { failure('Failed to unref shutdown deadline'); }
+      }).catch(() => { if (!deadlineFired) failure('Failed to complete shutdown'); });
+    });
+  } catch {
+    failure('Failed to close HTTP server');
+  }
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));

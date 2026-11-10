@@ -4,21 +4,24 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import express from 'express';
 
-process.env.DATABASE_URL = 'sqlite::memory:';
 process.env.ENCRYPTION_KEY = '0'.repeat(64);
 process.env.ADMIN_API_KEY = 'x'.repeat(20);
+// The production client refuses an unprovisioned :memory: database; use a provisioned temp file.
+await (await import(new URL('../../tests/helpers/fresh-db.mjs', import.meta.url).href)).useFreshFileDatabase();
+const { responseStream } = await import(new URL('../../tests/phase4-protocol-fixtures.mjs', import.meta.url).href);
 
 const { accountPool } = await import('../account-pool/manager.js');
+(await import(new URL('../../tests/helpers/legacy-select.mjs', import.meta.url).href)).adaptLegacySelect(accountPool); // routes selectCandidate through the selectAccount stub
 const { forwardChat } = await import('./forward-chat.js');
 const { AccountRepository } = await import('../db/repositories/accounts.js');
 
 test('HTTP chat route translates stream and non-stream with isolated database', async () => {
-  const oldSelect = accountPool.selectAccount, oldSuccess = accountPool.recordSuccess, oldFailure = accountPool.recordFailure, oldFetch = globalThis.fetch;
+  const oldSelect = accountPool.selectAccount, oldSuccess = accountPool.recordSuccessAsync, oldFailure = accountPool.recordFailureAsync, oldFetch = globalThis.fetch;
   let requests = 0, successes = 0;
   const upstream = createServer((_req,res) => {
     requests++;
     res.writeHead(200,{'content-type':'text/event-stream'});
-    res.end('data: {"type":"response.output_text.delta","delta":"actual"}\n\ndata: {"type":"response.completed","response":{"id":"r"}}\n\n');
+    res.end(responseStream.replaceAll('hello','actual')); // complete lifecycle without provider usage
   }).listen(0,'127.0.0.1');
   await once(upstream,'listening');
   const url = `http://127.0.0.1:${(upstream.address() as any).port}`;
@@ -26,8 +29,8 @@ test('HTTP chat route translates stream and non-stream with isolated database', 
   const repo = new AccountRepository();
   const account = repo.create({name:'mock', credentialType:'oauth', credentials:JSON.stringify({kind:'oauth',accessToken:'fake',accountId:'workspace'}),provider:'openai'});
   accountPool.selectAccount = async () => account;
-  accountPool.recordSuccess = () => {successes++;};
-  accountPool.recordFailure = () => {};
+  accountPool.recordSuccessAsync = async () => {successes++;};
+  accountPool.recordFailureAsync = async () => {};
   const app = express(); app.use(express.json()); app.post('/chat', (req,_res,next) => {req.user = {id:'u'} as any; next();}, forwardChat);
   const server = app.listen(0,'127.0.0.1'); await once(server,'listening');
   const endpoint = `http://127.0.0.1:${(server.address() as any).port}/chat`;
@@ -41,5 +44,5 @@ test('HTTP chat route translates stream and non-stream with isolated database', 
     assert.equal(requests,2); assert.equal(successes,2);
     const rejected = await oldFetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'gpt-5',messages:[{role:'user',content:'hi'}],tools:[]})});
     assert.equal(rejected.status,400); assert.equal(requests,2);
-  } finally {accountPool.selectAccount = oldSelect; accountPool.recordSuccess = oldSuccess; accountPool.recordFailure = oldFailure; globalThis.fetch = oldFetch; server.close(); upstream.close();}
+  } finally {accountPool.selectAccount = oldSelect; accountPool.recordSuccessAsync = oldSuccess; accountPool.recordFailureAsync = oldFailure; globalThis.fetch = oldFetch; server.close(); upstream.close();}
 });

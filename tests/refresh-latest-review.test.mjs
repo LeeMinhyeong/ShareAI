@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import {responseStream, responseStreamWithUsage} from './phase4-protocol-fixtures.mjs';
 Object.assign(process.env,{NODE_ENV:'test',DATABASE_URL:'sqlite::memory:',ENCRYPTION_KEY:'a'.repeat(64),ADMIN_API_KEY:'x'.repeat(20),LOG_PRETTY:'false'});
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const {AccountRepository}=await import('../src/db/repositories/accounts.ts');
 const {accountPool}=await import('../src/account-pool/manager.ts');
+(await import('./helpers/legacy-select.mjs')).adaptLegacySelect(accountPool); // tests stub legacy selectAccount
 const {resolveAuth}=await import('../src/upstream/tokens.ts');
 const {forwardChat}=await import('../src/upstream/forward-chat.ts');
 const repo=new AccountRepository();
@@ -19,8 +22,8 @@ test('a stale 401 on the same access token refreshes the new generation before r
   globalThis.fetch=async(url,opts)=>{
    if(String(url).includes('oauth/token')) {calls.push(String(opts.body)); return new Response(JSON.stringify({access_token:'rotated',refresh_token:'rotated-latest',expires_in:3600}));}
    calls.push(opts.headers.authorization);
-   if(calls.length===1){repo.update(a.id,{credentials:creds('same','new-latest')}); return new Response('',{status:401});}
-   return new Response('data: {"type":"response.completed","response":{"id":"r"}}\n\n',{headers:{'content-type':'text/event-stream'}});
+   if(calls.length===1){await new Promise(r=>setImmediate(r)); /* let the dispatch fence commit before the concurrent admin write */ repo.update(a.id,{credentials:creds('same','new-latest')}); return new Response('',{status:401});}
+   return new Response(responseStream,{headers:{'content-type':'text/event-stream'}});
   };
   const r=res(); await forwardChat(req(),r);
   assert.equal(calls.length,3); assert.equal(calls[0],'Bearer same'); assert.match(calls[1],/new-latest/); assert.equal(calls[2],'Bearer rotated');
@@ -34,7 +37,7 @@ test('normal request joins an in-process forced refresh before expiry without co
  const gate=new Promise(r=>release=r), entered=new Promise(r=>started=r);
  try {
   accountPool.selectAccount=async()=>repo.findById(a.id);
-  globalThis.fetch=async(url)=>{if(String(url).includes('oauth/token')){fetches++;started();await gate;return new Response(JSON.stringify({access_token:'fresh',refresh_token:'fresh-join',expires_in:3600}));} return new Response('data: {"type":"response.completed","response":{"id":"r"}}\n\n',{headers:{'content-type':'text/event-stream'}});};
+  globalThis.fetch=async(url)=>{if(String(url).includes('oauth/token')){fetches++;started();await gate;return new Response(JSON.stringify({access_token:'fresh',refresh_token:'fresh-join',expires_in:3600}));} return new Response(responseStream,{headers:{'content-type':'text/event-stream'}});};
   const first=resolveAuth(a,{forceRefresh:true,rejectedToken:'valid'}); await entered;
   const r=res(); const second=forwardChat(req(),r); await new Promise(r=>setTimeout(r,30)); release(); await Promise.all([first,second]);
   assert.equal(fetches,1); assert.equal(r.statusCode,undefined); assert.equal(repo.findById(a.id).status,'active'); assert.equal(accountPool.cooldownOf(a.id),0);

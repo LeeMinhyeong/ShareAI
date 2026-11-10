@@ -31,7 +31,9 @@ test('health returns liveness status', async () => {
     assert.equal((await response.json()).status, 'ok');
   } finally { await stop(child); }
 });
-test('shutdown drains an active request before closing database', async () => {
+// ADR 0009: admission happens when the router dispatches (after the body is parsed). A request
+// whose body is still arriving when shutdown starts is refused with 503 before any DB work.
+test('a request whose body completes after shutdown starts is refused before any DB work', async () => {
   const { child, port } = await start();
   const socket = net.connect(port, '127.0.0.1');
   let response = '';
@@ -48,8 +50,9 @@ test('shutdown drains an active request before closing database', async () => {
     socket.write('}');
     await ended;
     await exited;
-    assert.match(response, /^HTTP\/1\.1 200/);
-    assert.match(response, /"database":"open"/);
+    assert.match(response, /^HTTP\/1\.1 503/);
+    assert.match(response, /Server is shutting down/);
+    assert.doesNotMatch(response, /"database":"open"/);
   } finally { socket.destroy(); await stop(child); }
 });
 test('shutdown waits for disconnected refresh to persist rotated credentials', { timeout: 5000 }, async () => {
@@ -98,7 +101,11 @@ test('shutdown deadline bounds a stalled token exchange', { timeout: 9000 }, asy
     assert.equal((await exited)[0], 1);
   } finally { socket.destroy(); if (child.exitCode === null && child.signalCode === null) child.kill(); }
 });
-test('disconnected async handler cannot reopen database after shutdown', { timeout: 5000 }, async () => {
+// ADR 0009: the database is not closed at shutdown; a handler admitted before shutdown is drained
+// and completes its DB work even if its client disconnected. The child route copies the v1.ts
+// trackedRoute pattern (trackedRoute is not exported); real v1 routing is covered by
+// phase4-shutdown-drain-http.
+test('a disconnected tracked handler finishes its DB work during drain', { timeout: 5000 }, async () => {
   const { child, port } = await start();
   let output = ''; child.stdout.on('data', chunk => { output += chunk; });
   const socket = net.connect(port, '127.0.0.1'); socket.on('error', () => {});
@@ -108,9 +115,10 @@ test('disconnected async handler cannot reopen database after shutdown', { timeo
     socket.write('GET /v1/test-delayed-db HTTP/1.1\r\nHost: localhost\r\n\r\n');
     assert.equal((await started)[0].handler, 'started');
     const closed = once(socket, 'close'); socket.destroy(); await closed;
-    const exited = once(child, 'exit'); child.send('shutdown'); await exited;
-    assert.match(output, /DELAYED_DB_CLOSED/);
-    assert.doesNotMatch(output, /DELAYED_DB_REOPENED/);
+    const exited = once(child, 'exit'); child.send('shutdown');
+    assert.equal((await exited)[0], 0);
+    assert.match(output, /DELAYED_DB_DONE/);
+    assert.doesNotMatch(output, /DELAYED_DB_FAILED/);
   } finally { socket.destroy(); if (child.exitCode === null && child.signalCode === null) child.kill(); }
 });
 
@@ -169,13 +177,28 @@ test('OAuth relisten waits for previous callback server close', { timeout: 5000 
     assert.equal(result.relistening, true);
   } finally { await stop(child); }
 });
-test('successful drain cancels the shutdown deadline', { timeout: 9000 }, async () => {
+test('an idle server exits 0 promptly after shutdown', { timeout: 5000 }, async () => {
   const { child } = await start();
   try {
-    const ready = once(child, 'message'); child.send('keepalive'); await ready;
     const exited = once(child, 'exit'); child.send('shutdown');
+    const outcome = await Promise.race([exited.then(([code]) => code), new Promise(resolve => setTimeout(() => resolve('timeout'), 3000))]);
+    assert.equal(outcome, 0);
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill(); }
+});
+// ADR 0009: registered drains do not cover every possible producer, so the 5s deadline still ends
+// the process with 1 when other work keeps it alive past the deadline, even after a successful drain.
+test('work that outlives the deadline after a successful drain still exits 1', { timeout: 9000 }, async () => {
+  const { child } = await start();
+  try {
+    let stderr = ''; child.stderr?.on('data', d => { stderr += d; });
+    const ready = once(child, 'message'); child.send('keepalive'); await ready;
+    const exited = once(child, 'exit'); const begun = performance.now(); child.send('shutdown');
     const [code] = await exited;
-    assert.equal(code, 0);
+    assert.equal(code, 1);
+    const elapsed = performance.now() - begun;
+    assert.ok(elapsed >= 4500, 'ended by the 5s deadline, not by a crash');
+    assert.ok(elapsed < 7000, 'the deadline actually bounds the exit');
+    assert.doesNotMatch(stderr, /Failed to drain/, 'the drains themselves succeeded');
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill(); }
 });
 test('shutdown bounds waiting for an incomplete request', { timeout: 9000 }, async () => {

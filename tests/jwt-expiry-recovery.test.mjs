@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 Object.assign(process.env, { NODE_ENV:'test', DATABASE_URL:'sqlite::memory:', ENCRYPTION_KEY:'a'.repeat(64), ADMIN_API_KEY:'x'.repeat(20), LOG_PRETTY:'false' });
+await (await import('./helpers/fresh-db.mjs')).useFreshFileDatabase(); // the production client refuses an unprovisioned :memory: database
 const { AccountRepository } = await import('../src/db/repositories/accounts.ts');
 const { resolveAuth } = await import('../src/upstream/tokens.ts');
 const repo = new AccountRepository();
