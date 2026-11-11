@@ -10,6 +10,7 @@ import { CredentialVault } from '../../utils/encryption.js';
 
 const vault = new CredentialVault();
 export const refreshFingerprint = (provider: string, token: string) => createHash('sha256').update(JSON.stringify([provider, token])).digest('hex');
+const CREDIT_EXHAUSTION_NOTICE = /^API 크레딧 소진\([a-z_]{1,64}\): 크레딧을 충전한 뒤 계정을 다시 켜세요$/;
 type AdminAccount = Omit<UpstreamAccount, 'credentials' | 'meta' | 'quotaInfo'> & { credentialStatus: 'available' | 'unavailable' };
 
 function parseJson<T>(text: string | null | undefined, fallback: T): T {
@@ -165,6 +166,31 @@ export class AccountRepository {
     getDb().prepare(`UPDATE upstream_accounts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
   }
 
+  /**
+   * ADR 0020: administrator re-enables a non-active account. Clears the stale
+   * error text and starts a new state generation, so a request observed under the
+   * old generation can no longer change this account and process-local backoff is
+   * reset. If the account still carries the API credit exhaustion notice (status
+   * `error`, or `disabled` afterwards by an administrator), the provider 429
+   * restriction armed by that same response is lifted as well (manual recovery).
+   * Other admin field changes are applied in the same transaction.
+   */
+  reactivate(id: string, fields: Parameters<AccountRepository['update']>[1] = {}, db: Database = getDb()): boolean {
+    return db.transaction(() => {
+      const row = db.prepare('SELECT status, last_error FROM upstream_accounts WHERE id = ?').get(id) as { status: string; last_error: string | null } | undefined;
+      if (!row || row.status === 'active') return false;
+      this.update(id, { ...fields, status: undefined });
+      // An administrative change: request_revision is left alone, so the
+      // upstream_state_revision trigger advances state_revision.
+      db.prepare(`UPDATE upstream_accounts SET status = 'active', last_error = NULL, updated_at = ? WHERE id = ?`)
+        .run(new Date().toISOString(), id);
+      if (row.last_error && CREDIT_EXHAUSTION_NOTICE.test(row.last_error)) {
+        db.prepare("DELETE FROM main.account_429_v2_restrictions WHERE kind = 'upstream' AND account_id = ?").run(id);
+      }
+      return true;
+    }).immediate();
+  }
+
   /** Atomically compare the observed credential and preserve current metadata. */
   saveCredentialsIfUnchanged(id: string, expected: string, credentials: string, meta: AccountMeta): boolean {
     const db = getDb();
@@ -204,13 +230,13 @@ export class AccountRepository {
   }
 
   /** Apply an in-flight request result only to the state it observed. */
-  recordObservedFailure(id: string, status: number, message: string, observed?: UpstreamAccount, usedToken?: string, db: Database = getDb()): boolean {
+  recordObservedFailure(id: string, status: number, message: string, observed?: UpstreamAccount, usedToken?: string, db: Database = getDb(), statusOverride?: 'error'): boolean {
     return db.transaction(() => {
       const current = this.findById(id, db);
       if (observed && (!current || current.stateRevision !== observed.stateRevision || (usedToken === undefined
         ? current.credentials !== observed.credentials
         : (parseStoredCredentials(current.credentials)?.accessToken ?? current.credentials) !== usedToken))) return false;
-      const nextStatus = status === 429 ? 'quota_exceeded' : status === 401 || status === 403 ? 'error' : null;
+      const nextStatus = statusOverride ?? (status === 429 ? 'quota_exceeded' : status === 401 || status === 403 ? 'error' : null);
       const guard = observed ? ' AND state_revision = ?' : '';
       const params = observed ? [observed.stateRevision] : [];
       const result = db.prepare(`UPDATE upstream_accounts SET status = COALESCE(?, status), last_error = ?, updated_at = ?, request_revision = request_revision + 1
@@ -283,8 +309,11 @@ export class AccountRepository {
     const { credentials, meta, quotaInfo, ...safe } = this.rowToAccount(row, '');
     // Upstream error text can contain old credentials even after replacement.
     // Preserve it in storage, but never return it through the admin API.
+    // ADR 0020: the router-generated credit exhaustion notice is shown as is; its
+    // code is limited to [a-z_], so it cannot carry a credential.
     const lastError = credentialStatus === 'unavailable'
       ? 'Credential unavailable; verify the encryption key or replace credentials'
+      : safe.lastError && CREDIT_EXHAUSTION_NOTICE.test(safe.lastError) ? safe.lastError
       : safe.lastError ? 'Account error details redacted' : null;
     return { ...safe, lastError, credentialStatus };
   }

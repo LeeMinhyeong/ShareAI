@@ -306,10 +306,11 @@ export class AccountPoolManager {
     s.cooldownUntil = 0;
   }
 
-  async recordFailureAsync(accountId: string, f: {status:number; message:string; resetAt?:number | null}, observed: UpstreamAccount, usedToken?: string, signal?: AbortSignal): Promise<void> {
+  /** `creditExhausted` (ADR 0020) marks the account `error` regardless of status. */
+  async recordFailureAsync(accountId: string, f: {status:number; message:string; resetAt?:number | null; creditExhausted?:boolean}, observed: UpstreamAccount, usedToken?: string, signal?: AbortSignal): Promise<void> {
     const revisions = await withAsyncWriter(db => {
       const before = repo.findById(accountId, db);
-      if (!repo.recordObservedFailure(accountId, f.status, f.message, observed, usedToken, db)) return null;
+      if (!repo.recordObservedFailure(accountId, f.status, f.message, observed, usedToken, db, f.creditExhausted ? 'error' : undefined)) return null;
       return {before:before!.stateRevision, after:repo.findById(accountId, db)!.stateRevision};
     }, {signal});
     if (!revisions) return;

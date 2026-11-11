@@ -34,8 +34,37 @@ export class PassthroughHttpError extends UpstreamError {
  */
 export class PassthroughStreamFailure extends UpstreamError {
   readonly providerTerminal = true;
-  /** `raw` is the provider's own frame; it is written only after the attempt is settled. */
+  /** `raw` is the provider's own single failure frame (one SSE event, never several);
+   * it is written only after the attempt is settled. ADR 0020 parses it as one event. */
   constructor(status: number, public raw: string) { super(status, 'Upstream reported a stream failure'); }
+}
+
+const OPENAI_BILLING_CODES = new Set(['credit_balance_exhausted', 'insufficient_quota', 'organization_spend_limit_exceeded', 'project_spend_limit_exceeded', 'organization_usage_limit_exceeded']);
+/**
+ * ADR 0020: recognizes a provider error that retrying cannot fix because the
+ * account's prepaid credit (or spend limit) is exhausted. `status` is the HTTP
+ * status, or undefined for a failure frame inside a 200 stream. Returns the
+ * provider's code, or null. Pure and narrow: type/code and wording must match.
+ */
+export function creditExhaustionCode(provider: 'anthropic' | 'openai', status: number | undefined, raw: Buffer | string): string | null {
+  let text = typeof raw === 'string' ? raw : raw.toString('utf8');
+  if (status === undefined) text = text.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /, '')).join('\n');
+  let value: any;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (!value || typeof value !== 'object') return null;
+  if (provider === 'anthropic') {
+    const e = value.error;
+    if (!e || typeof e !== 'object') return null;
+    if ((status === undefined || status === 402) && e.type === 'billing_error') return 'billing_error';
+    if ((status === undefined || status === 400) && e.type === 'invalid_request_error' && typeof e.message === 'string' && /credit balance is too low/i.test(e.message)) return 'credit_balance_too_low';
+    return null;
+  }
+  if (status !== undefined && status !== 429) return null;
+  const e = status === undefined ? (value.type === 'response.failed' ? value.response?.error : value.type === 'error' ? (value.error ?? value) : undefined) : value.error;
+  if (!e || typeof e !== 'object') return null;
+  if (typeof e.code === 'string' && OPENAI_BILLING_CODES.has(e.code)) return e.code;
+  if (e.code == null && e.type === 'insufficient_quota') return 'insufficient_quota';
+  return null;
 }
 
 export type ParsedPassthrough = {

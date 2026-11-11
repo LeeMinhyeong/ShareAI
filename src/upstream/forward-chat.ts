@@ -7,7 +7,7 @@ import { RefreshIntentError } from '../db/repositories/accounts.js';
 import { logger } from '../utils/logger.js';
 import { resolveAuth } from './tokens.js';
 import { infer, UpstreamError, isSiwcStream429 } from './inference.js';
-import { parsePassthrough, startPassthrough, PassthroughHttpError, PassthroughStreamFailure, routerErrorBody, routerErrorFrame, type PassthroughProtocol, type ParsedPassthrough, type PassthroughResult } from './passthrough.js';
+import { parsePassthrough, startPassthrough, PassthroughHttpError, PassthroughStreamFailure, creditExhaustionCode, routerErrorBody, routerErrorFrame, type PassthroughProtocol, type ParsedPassthrough, type PassthroughResult } from './passthrough.js';
 import { invokeAccountAttempt, settleAccountAttempt, AccountAttemptOpen, AccountQuotaUnavailable, AccountCooldownBeforeDispatch, type AccountAttempt } from './account-quota.js';
 import { getDb } from '../db/client.js';
 import { withAsyncWriter } from '../db/async-writer.js';
@@ -523,7 +523,13 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
 
     const validErrorStatus = Number.isInteger(status) && status >= 400 && status <= 599;
     logStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
-    const shouldRecordFailure = account && ordinaryDispatched && !controller.signal.aborted && (status === 401 || status === 403 || status === 429 || !validErrorStatus || status >= 500) && !(error instanceof RefreshIntentError) && !(error instanceof AccountQuotaUnavailable);
+    // ADR 0020: an API-key account whose prepaid credit is exhausted leaves routing
+    // until an administrator re-enables it; the provider error is still forwarded.
+    const creditCode = account && ordinaryDispatched && !controller.signal.aborted && (observedAccount ?? account).credentialType === 'api_key' && (logProvider === 'anthropic' || logProvider === 'openai')
+      ? error instanceof PassthroughHttpError ? creditExhaustionCode(logProvider, error.status, error.body)
+        : error instanceof PassthroughStreamFailure ? creditExhaustionCode(logProvider, undefined, error.raw) : null
+      : null;
+    const shouldRecordFailure = account && ordinaryDispatched && !controller.signal.aborted && (creditCode || status === 401 || status === 403 || status === 429 || !validErrorStatus || status >= 500) && !(error instanceof RefreshIntentError) && !(error instanceof AccountQuotaUnavailable);
     if (siwcSelected && siwcDispatchedRevision !== undefined && !controller.signal.aborted && (!validErrorStatus || status === 429 || status >= 500)) {
       try { accountPool.recordSiwcFailure(siwcSelected, siwcDispatchedRevision); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record SIWC failure'); }
@@ -536,7 +542,7 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     }
     adapter.writeError(res, error, status, controller.signal.aborted);
     if (shouldRecordFailure && account) {
-      try { await accountPool.recordFailureAsync(account.id, {status, message:`Upstream request failed (${status})`}, observedAccount ?? account, usedToken, controller.signal); }
+      try { await accountPool.recordFailureAsync(account.id, creditCode ? {status, message:`API 크레딧 소진(${creditCode}): 크레딧을 충전한 뒤 계정을 다시 켜세요`, creditExhausted:true} : {status, message:`Upstream request failed (${status})`}, observedAccount ?? account, usedToken, controller.signal); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record upstream failure'); }
     }
     if (ordinaryDispatched && account) {

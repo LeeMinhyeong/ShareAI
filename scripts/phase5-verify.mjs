@@ -45,7 +45,7 @@ async function status() {
   const [accounts, snapshot, stats] = [await accountsOf(), await api('GET', '/admin/routing-snapshot'), await api('GET', '/admin/stats')];
   const state = new Map((snapshot.accounts ?? snapshot.rows ?? []).filter(r => r.kind === 'upstream').map(r => [r.id, r.state]));
   console.log('\naccounts (routing state: no_known_block = selectable, open = attempt in flight or uncertain, restricted = temporary block):');
-  for (const a of accounts) console.log(`  ${a.id}  ${a.provider.padEnd(9)} ${a.credentialType.padEnd(7)} ${String(a.status).padEnd(14)} ${(state.get(a.id) ?? '-').padEnd(15)} ${a.name}`);
+  for (const a of accounts) console.log(`  ${a.id}  ${a.provider.padEnd(9)} ${a.credentialType.padEnd(7)} ${String(a.status).padEnd(14)} ${(state.get(a.id) ?? '-').padEnd(15)} ${a.name}${a.status === 'error' && a.lastError ? `\n      ${a.lastError}` : ''}`);
   if (!accounts.length) console.log('  (none)');
   console.log(`\ntoday usage: ${JSON.stringify(stats.todayUsage)}`);
 }

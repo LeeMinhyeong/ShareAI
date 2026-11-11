@@ -524,7 +524,11 @@ router.patch('/accounts/:id', authenticateAdmin, (req: Request, res: Response) =
       return;
     }
 
-    accountRepo.update(id, { name, status, dailyQuota, priority, weight, credentials });
+    // ADR 0020: re-enabling a non-active account goes through reactivate(), which
+    // applies the other fields, clears the stale error text and starts a new state
+    // generation in one transaction.
+    if (status === 'active' && account.status !== 'active') accountRepo.reactivate(id, { name, dailyQuota, priority, weight, credentials });
+    else accountRepo.update(id, { name, status, dailyQuota, priority, weight, credentials });
 
     logger.info({ accountId: id }, 'Account updated');
 
