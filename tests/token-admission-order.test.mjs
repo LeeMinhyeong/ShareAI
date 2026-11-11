@@ -95,7 +95,7 @@ function fixture(options = {}) {
   }; } }), { json: () => () => {} });
   const stop = name => { events.push(name); invoke(name); if (options.fail === name) throw false; return Promise.resolve(); };
   load('src/server.ts', {
-    express, './config/env.js': { env: {} }, './utils/logger.js': { logger },
+    express, './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js': { env: {} }, './utils/logger.js': { logger },
     './upstream/oauth.js': { stopOAuth: () => stop('oauth') },
     './upstream/siwc-login.js': { stopSiwc: () => stop('siwc'), noStoreSiwc() {} },
     './upstream/tokens.js': tokens, './request-work.js': work,

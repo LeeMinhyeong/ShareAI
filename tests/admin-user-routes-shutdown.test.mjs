@@ -15,9 +15,11 @@ if (process.argv[2] !== '--fixture') {
     const stages = new Set(['startup', 'discovery', 'normal', 'payload', 'failure', 'validation', 'complete']);
     child.on('message', value => { if (stages.has(value)) stage = value; });
     child.on('error', () => { spawnFailed = true; });
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 20000);
+    // The fixture child is CPU-bound (~9s idle); under a parallel full-suite run it reached the old 20s
+    // kill timer. This test checks ownership/exit semantics, not speed; the timer only bounds a hang.
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 60000);
     const result = await new Promise(resolve => {
-      const unconfirmed = setTimeout(() => resolve(null), 25000);
+      const unconfirmed = setTimeout(() => resolve(null), 65000);
       child.once('close', (code, signal) => { clearTimeout(unconfirmed); resolve({ code, signal }); });
     });
     clearTimeout(timer);

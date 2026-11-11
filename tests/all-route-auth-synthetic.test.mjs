@@ -70,7 +70,7 @@ function fixture({admin: mutateAdmin, v1: mutateV1, siwc: mutateSiwc} = {}) {
   }, mutateAdmin);
   const v1 = load('../src/routes/v1.ts', {express,'../auth/user-auth.js':auth,'../request-work.js':{requestWork:manager},
     '../utils/logger.js':{logger},'../config/env.js':{env:{NODE_ENV:'test'}},
-    '../upstream/forward-chat.js':{forwardChat(_req,res){downstream++; res.status(200).json({ok:true});}}}, mutateV1).default;
+    '../upstream/forward-chat.js':{forwardMessages(_req,res){downstream++; res.status(200).json({ok:true});},forwardResponses(_req,res){downstream++; res.status(200).json({ok:true});},anthropicErrorEnvelope(){},anthropicErrorBody:(_s,message)=>({type:'error',error:{type:'api_error',message}}),forwardChat(_req,res){downstream++; res.status(200).json({ok:true});}}}, mutateV1).default;
   assert.ok(siwcRouter, 'admin must create the SIWC router');
   return {admin:adminModule.default, noStore:adminModule.routingSnapshotNoStore, siwcRouter, siwcNoStore:siwc.noStoreSiwc,
     v1, manager, guard:auth.authenticateAdmin,
@@ -166,7 +166,7 @@ async function checkAdmin(f) {
 
 async function checkV1(f) {
   const v1Routes = routes(f.v1);
-  assert.deepEqual(v1Routes.map(r => `${r.method} ${r.path}`).sort(), ['GET /models', 'POST /chat/completions', 'POST /messages']);
+  assert.deepEqual(v1Routes.map(r => `${r.method} ${r.path}`).sort(), ['GET /models', 'POST /chat/completions', 'POST /messages', 'POST /responses']); // /responses added by ADR 0019
   // The sole non-route layer is the OPTIONS responder; it must pass other methods through untouched.
   const middleware = f.v1.stack.filter(layer => !layer.route);
   assert.equal(middleware.length, 1, 'unexpected v1 middleware');
@@ -183,7 +183,7 @@ async function checkV1(f) {
     }
     // Positive control: a valid synthetic key reaches the handler, so the
     // rejections above are not an artifact of a fixture that rejects everything.
-    const expected = {'/models':[200, 0], '/chat/completions':[200, 1], '/messages':[501, 0]}[r.path];
+    const expected = {'/models':[200, 0], '/chat/completions':[200, 1], '/messages':[200, 1], '/responses':[200, 1]}[r.path]; // ADR 0019
     for (const headers of [{authorization:`Bearer ${VALID}`}, {'x-api-key':VALID}]) {
       const before = f.authCalls, downstream = f.downstream;
       const res = await request(f.v1, r.method, urlFor(r.path), headers, ()=>f.authCalls-before);

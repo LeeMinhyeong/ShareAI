@@ -91,13 +91,14 @@ test('usage-bearing inference counts exactly once, not once per usage log', asyn
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test('upstream failure and unimplemented inference retain reservations', async () => {
+// ADR 0019: /v1/messages is implemented; a locally rejected request (invalid body) still keeps its reservation.
+test('upstream failure and locally rejected inference retain reservations', async () => {
   const key = 'failure-http'; const u = user(key); const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response('failure', { status: 500 });
   try {
     assert.equal((await request('/v1/chat/completions', key, chat)).status, 500);
     assert.equal(repo.getTodayUsageCount(u.id), 1);
-    assert.equal((await request('/v1/messages', key, {})).status, 501);
+    assert.equal((await request('/v1/messages', key, {})).status, 400);
     assert.equal(repo.getTodayUsageCount(u.id), 2);
   } finally { globalThis.fetch = originalFetch; }
 });

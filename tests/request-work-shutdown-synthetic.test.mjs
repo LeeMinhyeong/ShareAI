@@ -36,7 +36,7 @@ test('shutdown waits for owned authentication after disconnect and retains DB', 
   const app={all(){},use(...args){middleware.push(args)},get(){},listen(_port,_host,cb){startup=cb;return server}};
   const express=Object.assign(()=>app,{json:()=> (_req,_res,next)=>next()});
   const processFake={exitCode:0,on(name,cb){if(name==='SIGTERM') signal=cb},exit(){throw Error('unexpected exit')}};
-  load('../src/server.ts', {'express':{default:express},'./config/env.js':{env:{}},'./utils/logger.js':{logger},
+  load('../src/server.ts', {'express':{default:express},'./http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js':{env:{}},'./utils/logger.js':{logger},
     './upstream/oauth.js':{stopOAuth:async()=>{}},'./upstream/siwc-login.js':{stopSiwc:async()=>{},noStoreSiwc(){}},
     './upstream/tokens.js':{drainTokenRefreshes:async()=>{}},'./db/client.js':{initDatabase(){},requireInitializedDatabase(){},closeDatabase(){dbClosed++}},
     './db/account-429-v2-store.js':{assert429V2Schema(){}},'./db/account-429-v2-expiry.js':{Account429V2Expiry:class{start(){} stopAndDrain(){return Promise.resolve()}}},

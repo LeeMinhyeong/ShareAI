@@ -20,7 +20,7 @@ function setup() {
     '../utils/logger.js': {logger: {error() {}}}, './tokens.js': {},
     './inference.js': {UpstreamError}, './account-quota.js': {AccountQuotaUnavailable: class extends Error {}},
     '../db/client.js': {getDb: () => ({prepare: () => ({get: () => undefined})})}, '../db/async-writer.js': {}, '../utils/encryption.js': {}, '../db/account-429-v2-store.js': {assert429V2Schema() {}},
-    './siwc-store.js': {}, './siwc-refresh.js': {}, './ordinary-429-deadline.js': ordinaryDeadline,
+    './siwc-store.js': {}, './siwc-refresh.js': {}, './ordinary-429-deadline.js': ordinaryDeadline, './passthrough.js': {parsePassthrough(){throw new Error('passthrough unused');},startPassthrough(){throw new Error('passthrough unused');},PassthroughHttpError:class extends Error{},PassthroughStreamFailure:class extends Error{},routerErrorBody:()=>({}),routerErrorFrame:()=>''},
     '../db/repositories/settings.js': {SettingsRepository: class {getStrategy() {return 'priority';}}, STRATEGIES:['priority','least_used','round_robin']},
   };
   const source = readFileSync(new URL('../src/upstream/forward-chat.ts', import.meta.url), 'utf8');

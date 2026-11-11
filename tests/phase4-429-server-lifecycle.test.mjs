@@ -34,7 +34,7 @@ function fixture(schema = true, bindFails = false) {
   appFactory.json=express.json;
   const client={initDatabase:()=>db, requireInitializedDatabase:()=>{events.push('schema-check');return db;}, closeDatabase:()=>{events.push('db-close'); closed=true; db.close();}};
   const mocks={
-    express:{default:appFactory,__esModule:true}, './config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
+    express:{default:appFactory,__esModule:true}, './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
     './utils/logger.js':{logger:{info:()=>{},error:(...args)=>errors.push(args)}},
     './upstream/oauth.js':{stopOAuth:async()=>{}}, './upstream/siwc-login.js':{stopSiwc:async()=>{},noStoreSiwc:(_q,_s,n)=>n()},
     './upstream/tokens.js':{drainTokenRefreshes:()=>{events.push('token-stop'); return Promise.resolve();}},
@@ -142,7 +142,7 @@ function fatalFixture(listen = true, failures = false) {
   appFactory.json=express.json;
   const proc={env:{},exitCode:0,hrtime:{bigint:()=>0n},on:(s,f)=>{signals[s]=f;},exit:c=>events.push('exit:'+c)};
   const mocks={
-    express:{default:appFactory,__esModule:true}, './config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
+    express:{default:appFactory,__esModule:true}, './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
     './utils/logger.js':{logger:{info:()=>events.push('log'),error:()=>events.push('log')}},
     './upstream/oauth.js':{stopOAuth:()=>{events.push('oauth-stop'); if(failures) throw Error('oauth'); return Promise.resolve();}},
     './upstream/siwc-login.js':{stopSiwc:()=>{events.push('siwc-stop'); return failures ? Promise.reject(Error('siwc')) : Promise.resolve();},noStoreSiwc:(_q,_s,n)=>n()},
@@ -255,7 +255,7 @@ test('real request-work drain protects explicitly registered synthetic work duri
         return bypass ? Promise.resolve() : actualDrain;
       };
       const mocks={
-        express:{default:appFactory,__esModule:true}, './config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
+        express:{default:appFactory,__esModule:true}, './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
         './utils/logger.js':{logger:{info(){},error(){}}},
         './upstream/oauth.js':{stopOAuth:hook('oauth')}, './upstream/siwc-login.js':{stopSiwc:hook('siwc'),noStoreSiwc:(_q,_s,n)=>n()},
         './upstream/tokens.js':{drainTokenRefreshes:hook('token')},

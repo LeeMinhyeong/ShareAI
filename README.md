@@ -302,12 +302,55 @@ multi-account-router/
 ### Phase 5. 클라이언트 호환
 
 **목표:** Claude Code·Codex의 요청/응답, 스트리밍, thinking, tool call을 지원합니다.  
-**현재 상태:** 일부 구현 / 대부분 미검증. 실제 클라이언트의 전체 동작을 확인하지 못했습니다.
+**현재 상태:** 구현·리뷰 완료, **실제 클라이언트·실제 계정 확인 전**. 범위와 완료 조건은 [ADR 0019](docs/adr/0019-phase5-client-compatibility-scope.md)에 고정했습니다(2026-11-10 사용자 승인). 모든 확인은 합성 공급자로만 했습니다.
 
-- Claude Code 및 Codex CLI/App의 요청·응답 형식 처리
-- 스트리밍 응답, thinking 및 tool call 처리
-- 각 클라이언트에서 실제 작업 및 오류 상황 검증
-- **완료 기준:** 각 CLI/App에서 실제 작업과 스트리밍·도구 호출 검증
+- [x] 공통 dispatch 파이프라인 분리(기존 `/v1/chat/completions` 새 실패 0, run18)
+- [x] `/v1/messages`: Anthropic API 키·구독 OAuth, 원문 전달(스트림·비스트림, 도구, thinking, `system`·`cache_control`, 베타 헤더). 합성 공급자 테스트만 함
+- [x] `/v1/responses`: OpenAI API 키·Codex 구독 OAuth, 원문 전달(스트림·비스트림, function call, reasoning, `store:false`). 합성 공급자 테스트만 함
+- [x] Phase 4 안전 속성 승계(인증·한도·ACL·OPEN·429/5xx 제한·Esc 전환·시간 제한·401 갱신·종료 drain·사용량)
+- [x] 프로토콜별 엄격한 종료 판정, 공급자 오류·헤더 전달(사용자 결정 3B·4B. 헤더는 리뷰에 따라 허용 목록 방식)
+- [x] README 클라이언트 설정 안내
+- [ ] 실제 클라이언트×실제 계정 4조합 확인(사용자 실행)
+- [x] 독립 리뷰·재리뷰 PASS(deleg_aec37528 → b02008e9 → 5fe04403), 격리 전체 테스트 246/267(새 실패 0, 보류 21)
+- **완료 후 추가 개발:** 교차 공급자 변환(Claude Code→OpenAI 계정, Codex→Anthropic 계정)
+
+#### 클라이언트 연결 방법 (Phase 5, 실제 계정 확인 전)
+
+ShareAI 관리자 화면이나 Admin API로 만든 **ShareAI 사용자 키**를 클라이언트의 자격증명으로 씁니다. 공급자 계정(구독·API 키)은 서버에만 있고 클라이언트로 전달되지 않습니다.
+
+**Claude Code** — Anthropic 계정(구독 OAuth 또는 `sk-ant-api` 키)으로 라우팅됩니다.
+
+```bash
+export ANTHROPIC_BASE_URL=http://<ShareAI 호스트>:20100   # /v1 은 붙이지 않음
+export ANTHROPIC_AUTH_TOKEN=<ShareAI 사용자 키>            # Authorization: Bearer 로 전송
+claude
+```
+
+- `ANTHROPIC_AUTH_TOKEN`이 있으면 PC에 저장된 claude.ai 로그인은 전송되지 않습니다(공식 문서). `ANTHROPIC_API_KEY`(→ `x-api-key`)로 넣어도 됩니다.
+- 응답의 `anthropic-ratelimit-unified-*` 헤더는 이번 요청을 처리한 **공유 풀 계정**의 값입니다(ADR 0019 결정 4B).
+
+**Codex CLI** — OpenAI 계정(Codex 구독 OAuth 또는 `sk-` 키)으로 라우팅됩니다. `~/.codex/config.toml`(사용자 수준; 프로젝트 `.codex/config.toml`의 공급자 설정은 무시됨):
+
+```toml
+model = "<사용할 모델>"
+model_provider = "shareai"
+
+[model_providers.shareai]
+name = "ShareAI"
+base_url = "http://<ShareAI 호스트>:20100/v1"
+env_key = "SHAREAI_API_KEY"
+wire_api = "responses"
+supports_websockets = false
+capabilities.remote_compaction = "unsupported"
+```
+
+```bash
+export SHAREAI_API_KEY=<ShareAI 사용자 키>
+codex
+```
+
+- `wire_api`는 공식 문서상 `responses`만 지원합니다. WebSocket 전송과 원격 압축은 ShareAI가 지원하지 않으므로 끕니다.
+- 공급자 오류는 상태·본문 그대로 전달됩니다(결정 3B). 공급자가 없는 라우터 자체 오류(인증, 한도, 적격 계정 없음 등)는 각 프로토콜의 오류 형식으로 반환됩니다.
 
 ### Phase 6. 대시보드와 운영
 

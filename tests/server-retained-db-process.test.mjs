@@ -35,7 +35,7 @@ if(process.argv[2]!=='--fixture-child'){
   const signals={},app={all(){},use(){},get(){},listen(_port,_host,cb){startup=cb;return {on(){},close(cb){cb();},closeAllConnections(){}};}};
   const express=Object.assign(()=>app,{json:()=>()=>{}});
   class Expiry{start(){expiryStarts++;}stopAndDrain(){return Promise.resolve();}}
-  const modules={express,'./config/env.js':{env:{NODE_ENV:'test'}},'./utils/logger.js':{logger:{info(){},error(){}}},
+  const modules={express,'./http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js':{env:{NODE_ENV:'test'}},'./utils/logger.js':{logger:{info(){},error(){}}},
     './upstream/oauth.js':{stopOAuth:()=>Promise.resolve()},'./upstream/siwc-login.js':{stopSiwc:()=>Promise.resolve(),noStoreSiwc(){}},
     './upstream/tokens.js':{drainTokenRefreshes:()=>Promise.resolve()},'./request-work.js':{requestWork:{stopAndDrain:()=>Promise.resolve()},trackedErrorHandler:handler=>handler},
     './db/client.js':{initDatabase:()=>{initCalls++;return db;},requireInitializedDatabase:()=>db,closeDatabase:()=>db.close()},

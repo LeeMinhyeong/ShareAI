@@ -45,7 +45,9 @@ test('router wiring uses the extracted parser', () => {
   // Persisted restrictions pass through the stricter recovery gate with a fresh wall-clock sample.
   assert.match(routerSource, /recovery429DurationAt\(Date\.now\(\),\s*hint,\s*serverDate\)/);
   assert.match(routerSource, /recovery429Duration\(restriction\.hint,\s*restriction\.date\)/);
-  assert.match(routerSource, /response\.status === 429\s*\?\s*recovery429Duration\(response\.headers\.get\('retry-after'\)/);
+  // ADR 0019: HTTP outcomes and in-stream provider failures share providerRestrictionMs.
+  assert.match(routerSource, /status === 429\s*\?\s*recovery429Duration\(retryAfter,\s*date\)/);
+  assert.match(routerSource, /providerRestrictionMs\(response\.status,\s*response\.headers\.get\('retry-after'\)/);
   // Client Retry-After header guidance uses the same parser.
   assert.match(routerSource, /status === 429[\s\S]{0,200}?ordinary429Deadline\(now,\s*error\.headers\['retry-after'\],\s*error\.headers\.date\)/);
 });

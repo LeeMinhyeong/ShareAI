@@ -20,7 +20,7 @@ test('shutdown retains DB for work outside currently tracked drains',async()=>{
   class Expiry {start(){events.push('expiry-start');} stopAndDrain(){return drain('expiry');}}
   const modules={
     express,
-    './config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
+    './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js':{env:{PORT:1,HOST:'fixture',NODE_ENV:'test'}},
     './utils/logger.js':{logger:{info(){},error(){}}},
     './upstream/oauth.js':{stopOAuth:()=>drain('oauth')},
     './upstream/siwc-login.js':{stopSiwc:()=>drain('siwc'),noStoreSiwc(){}},

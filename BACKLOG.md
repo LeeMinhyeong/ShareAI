@@ -216,3 +216,20 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 - `oauth-refresh-http-cancel`: 각 사례 뒤에 남은 refresh flight가 0인지 단언한다(사례 사이 오염 탐지).
 - `phase2-quota-http` 사례 5: 공유 v2 5xx 제한이 기록됐는지 단언한다.
 - `phase4-least-used-utc-http`: poison 워커가 ready 이후 비협조 상태에서 정리되는지 확인한다.
+
+## Phase 5 이후 추가 개발 (2026-11-10, 사용자 결정, ADR 0019)
+
+- **교차 공급자 변환(1B):** Claude Code(`/v1/messages`)로 OpenAI 계정, Codex(`/v1/responses`)로 Anthropic 계정 사용. Phase 5 완료 후 별도 ADR로 손실 범위(thinking 서명, 도구 형식, 캐시)와 완료 조건을 정하고 진행한다.
+- `/v1/messages/count_tokens`, `/v1/models` 탐색, Codex WebSocket·원격 압축, SIWC 계정의 새 엔드포인트 사용, 10MB 초과 본문.
+
+## Phase 5 1차 리뷰 잔여 (2026-11-10, deleg_aec37528)
+
+- **(정책 결정 필요) `anthropic-beta`가 열린 목록이라 생기는 비용 문제:** 공유 사용자가 유료 서버 도구(웹 검색, MCP 커넥터 등)를 켤 수 있다. 그 비용은 계정 소유자에게 가고, 토큰 기반 한도에는 반영되지 않는다. 공식 문서는 열린 목록으로 전달하라고 권한다.
+- 느린 클라이언트 때문에 `drain`을 300초 넘게 기다리면 무응답 제한이 발동하고, 계정이 60초 제한을 받는다. chat 경로도 같다.
+- `/v1/messages/count_tokens`가 없어서 Anthropic 형식의 404가 아니라 서버 기본 404를 돌려준다. 클라이언트는 추정치로 대체해서 동작은 한다.
+- 세션 친화성 없음: 대화 도중 계정이 바뀌면 `previous_response_id`, `encrypted_content`, thinking 서명이 다른 계정에서 거부될 수 있다. `x-claude-code-session-id`·`session_id` 기준으로 같은 계정에 고정하는 방안을 검토한다.
+- Codex 구독 백엔드가 요구하는 본문 조건(`store:false` 등)은 실제 계정으로 확인해야 한다(완료 조건 6).
+- 앞서 등록한 토큰 갱신 무기한 대기 의심 건: `refreshTokens`는 `AbortSignal.timeout(10_000)`을 걸고 `res.text()`까지 같은 signal 아래에서 읽는다. 그래서 실제 fetch에서는 10초로 끝날 가능성이 높다. 테스트에서 멈춘 건 가짜 fetch가 signal을 무시했기 때문으로 보인다. 아직 확인하지 않았다.
+- (deleg_5fe04403) 본문을 읽는 단계(express.json)에서 난 오류(잘못된 JSON 400, 너무 큰 본문 413, 지원하지 않는 charset 415)는 `/v1/messages`에서도 Anthropic 형식이 아니라 `{error:{type,message}}` 형식으로 나간다. 상태 코드는 4xx로 맞다. 고치려면 server.ts 오류 처리기가 경로를 보고 형식을 고르게 한다(VM 테스트 의존성에 주의).
+- 중복 키 검사 함수의 경계 검사는 JSON.parse 전제 때문에 테스트에서 도달하지 못한다. 경계 검사를 빼는 변형을 해도 테스트가 실패하지 않는다. 방어용으로 남겨 둔다.
+- admin 종료 테스트 두 개(account, user)는 전체 실행 안에서 25~27초가 걸린다(혼자 돌리면 7~12초). 강제 종료 제한을 60초로 늘렸기 때문에 종료가 느려지는 회귀는 이 테스트로 잡기 어렵다.

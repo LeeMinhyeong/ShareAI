@@ -4,12 +4,14 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { authenticateUserInDispatch } from '../auth/user-auth.js';
-import { forwardChat } from '../upstream/forward-chat.js';
+import { forwardChat, forwardMessages, forwardResponses, anthropicErrorEnvelope, anthropicErrorBody } from '../upstream/forward-chat.js';
 import { requestWork } from '../request-work.js';
 import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
 
 const router = Router();
+
+const isMessagesPath = (url: string) => /^\/messages\/?(?:\?|$)/i.test(url);
 
 // Deny even unmatched v1 paths after stop. Each known endpoint acquires its
 // own private lease before it starts; request identity is not a capability.
@@ -17,7 +19,10 @@ const dispatchRouter = router as typeof router & { handle(req: Request, res: Res
 const handle = dispatchRouter.handle;
 dispatchRouter.handle = function (req: Request, res: Response, out: NextFunction) {
   if (requestWork.isAccepting()) return handle.call(router, req, res, out);
-  try { res.status(503).json({ error: { type: 'service_unavailable', message: 'Server is shutting down.' } }); }
+  try {
+    if (isMessagesPath(req.url)) res.status(503).json(anthropicErrorBody(503, 'Server is shutting down.'));
+    else res.status(503).json({ error: { type: 'service_unavailable', message: 'Server is shutting down.' } });
+  }
   catch { try { res.destroy(); } catch { /* best effort */ } }
 };
 
@@ -62,7 +67,7 @@ if (typeof router.use === 'function') {
     return res.set('Allow', allow).send(allow);
   });
   router.use((req, res, next) => {
-    if (req.method === 'OPTIONS' && /^\/(?:models|messages|chat\/completions)\/?(?:\?|$)/i.test(req.url)) options(req, res, next);
+    if (req.method === 'OPTIONS' && /^\/(?:models|messages|responses|chat\/completions)\/?(?:\?|$)/i.test(req.url)) options(req, res, next);
     else next();
   });
 }
@@ -82,18 +87,20 @@ router.post('/chat/completions', ownedEndpoint(true, forwardChat));
 
 /**
  * POST /v1/messages
- * Anthropic Messages API 호환
+ * Anthropic Messages passthrough for Claude Code (ADR 0019)
  */
-router.post('/messages', ownedEndpoint(true, async (req: Request, res: Response) => {
-  const user = req.user!;
-  
-  res.status(501).json({
-    error: {
-      type: 'not_implemented',
-      message: 'Anthropic Messages API will be implemented soon.',
-    },
-  });
-}));
+// One layer only: the envelope is installed inside the route handler, never via Express next().
+const ownedMessages = ownedEndpoint(true, forwardMessages);
+router.post('/messages', (req: Request, res: Response, next: NextFunction) => {
+  anthropicErrorEnvelope(res);
+  return ownedMessages(req, res, next);
+});
+
+/**
+ * POST /v1/responses
+ * OpenAI Responses passthrough for Codex (ADR 0019)
+ */
+router.post('/responses', ownedEndpoint(true, forwardResponses));
 
 /**
  * GET /v1/models

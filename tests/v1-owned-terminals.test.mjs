@@ -17,7 +17,7 @@ function fixture(forward = async()=>{}) {
   const api=load('../src/request-work.ts'), manager=new api.RequestWorkManager(), logger={error(){},warn(){},debug(){}};
   const user={id:'u',name:'u',email:'u',tier:'free',dailyLimit:1};
   const auth=load('../src/auth/user-auth.ts',{'../db/repositories/users.js':{UserRepository:class {findByApiKeyHash(){return user}}},'../utils/encryption.js':{hashApiKey:()=> 'hash'},'../utils/logger.js':{logger},'../config/env.js':{env:{}},'../request-work.js':{requestWork:manager},'../db/async-writer.js':{withAsyncWriter:()=>({allowed:true,user})}});
-  const router=load('../src/routes/v1.ts',{express,'../config/env.js':{env:{NODE_ENV:'test'}},'../auth/user-auth.js':auth,'../request-work.js':{requestWork:manager},'../utils/logger.js':{logger},'../upstream/forward-chat.js':{forwardChat:forward}}).default;
+  const router=load('../src/routes/v1.ts',{express,'../config/env.js':{env:{NODE_ENV:'test'}},'../auth/user-auth.js':auth,'../request-work.js':{requestWork:manager},'../utils/logger.js':{logger},'../upstream/forward-chat.js':{forwardMessages:forward,forwardResponses:forward,anthropicErrorEnvelope(){},anthropicErrorBody:(_s,message)=>({type:'error',error:{type:'api_error',message}}),forwardChat:forward}}).default;
   return {api,manager,router};
 }
 function request(method='POST',url='/chat/completions',headers={}) {return {method,url,headers};}
@@ -38,14 +38,15 @@ test('v1 error terminates locally and drains', {timeout:2000},async()=>{
   assert.equal(calls,0);assert.equal(res.statusCode,500);
   assert.deepEqual(res.body,{error:{type:'internal_error',message:'Internal server error.'}});
 });
-test('all three v1 routes execute their real authentication and drain', {timeout:2000}, async()=>{
-  for (const [method,url,status] of [['POST','/chat/completions',200],['POST','/messages',501],['GET','/models',200]]) {
+// ADR 0019: /messages and /responses are owned inference endpoints like /chat/completions.
+test('all v1 routes execute their real authentication and drain', {timeout:2000}, async()=>{
+  for (const [method,url,status] of [['POST','/chat/completions',200],['POST','/messages',200],['POST','/responses',200],['GET','/models',200]]) {
     let calls=0;
     const {manager,router}=fixture(async (_req,res)=>{calls++;res.json({ok:true})}), res=response();
     router.handle(request(method,url,{authorization:'Bearer synthetic'}),res,()=>{});
     await manager.stopAndDrain();
     assert.equal(res.statusCode,status);
     assert.equal(res.writableEnded,true);
-    assert.equal(calls,url==='/chat/completions'?1:0);
+    assert.equal(calls,url==='/models'?0:1);
   }
 });

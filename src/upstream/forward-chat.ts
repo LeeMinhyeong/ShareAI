@@ -7,6 +7,7 @@ import { RefreshIntentError } from '../db/repositories/accounts.js';
 import { logger } from '../utils/logger.js';
 import { resolveAuth } from './tokens.js';
 import { infer, UpstreamError, isSiwcStream429 } from './inference.js';
+import { parsePassthrough, startPassthrough, PassthroughHttpError, PassthroughStreamFailure, routerErrorBody, routerErrorFrame, type PassthroughProtocol, type ParsedPassthrough, type PassthroughResult } from './passthrough.js';
 import { invokeAccountAttempt, settleAccountAttempt, AccountAttemptOpen, AccountQuotaUnavailable, AccountCooldownBeforeDispatch, type AccountAttempt } from './account-quota.js';
 import { getDb } from '../db/client.js';
 import { withAsyncWriter } from '../db/async-writer.js';
@@ -64,13 +65,162 @@ async function settleSiwc(attempt: {accountId:string; attemptId:string}, restric
     if (db.prepare('DELETE FROM main.siwc_account_attempts WHERE account_id=? AND attempt_id=?').run(attempt.accountId, attempt.attemptId).changes !== 1) throw new Error('SIWC attempt ownership lost');
   });
 }
+// The shared restriction a provider-reported outcome arms (ADR 0008/0012): 429 by
+// its validated hint, confirmed 5xx by the shared backoff, anything else none.
+function providerRestrictionMs(status: number, retryAfter: string | undefined, date: string | undefined, accountId: string, stateRevision: any): number | null | undefined {
+  return status === 429
+    ? recovery429Duration(retryAfter, date)
+    : status >= 500 && status <= 599
+      ? accountPool.shared5xxBackoffMs('upstream', accountId, stateRevision)
+      : undefined;
+}
 // ADR 0016 item 3: no whole-request limit. Each dispatch must yield response
 // headers within firstResponseMs; afterwards the request is abandoned only when
 // neither a provider body chunk (SSE comments included) nor a completed client
 // write was observed for idleMs. Mutable only as a test seam; operator
 // configuration is backlog.
 export const INFERENCE_TIMEOUTS = {firstResponseMs: 60_000, idleMs: 300_000};
-export async function forwardChat(req: Request, res: Response) {
+
+type TokenUsage = {input:number; output:number};
+type ParsedInference = { model: string; provider: 'anthropic' | 'openai'; routerOptions?: any; generationOptions: boolean };
+type RespondContext = {
+  res: Response; signal: AbortSignal; model: string;
+  /** Marks the provider terminal observed, settles the owned attempt and samples completion. Call before writing the client terminal. */
+  settle: () => Promise<void>;
+  touch: () => void;
+  observeUsage: (usage: TokenUsage | undefined) => void;
+};
+/**
+ * Protocol adapter for the shared inference pipeline (ADR 0019 decision 2):
+ * the pipeline owns authentication, selection, admission fences, restrictions,
+ * timers, refresh, settlement and usage logging; an adapter owns only the wire
+ * format of one endpoint.
+ */
+interface InferenceAdapter<P extends ParsedInference, O> {
+  allowSiwc: boolean;
+  parse(req: Request): P;
+  start(provider: string, auth: any, parsed: P, signal: AbortSignal, invoke: (start: () => Promise<globalThis.Response>) => Promise<globalThis.Response>): Promise<O>;
+  respond(output: O, parsed: P, ctx: RespondContext): Promise<void>;
+  writeError(res: Response, error: unknown, status: number, aborted: boolean): void;
+}
+
+const errorMessage = (error: unknown) => error instanceof RefreshIntentError ? 'Token refresh is in progress or its outcome is uncertain; retry later or reauthenticate' : error instanceof UpstreamError ? error.message : 'Upstream request failed';
+
+type ChatParsed = ParsedInference & { stream: boolean; request: {model:string; messages:any; temperature?:number; max_tokens?:number} };
+const chatCompletionsAdapter: InferenceAdapter<ChatParsed, AsyncGenerator<{text?:string; finish?:string; usage?:TokenUsage}>> = {
+  allowSiwc: true,
+  parse(req) {
+    const {model, messages, stream = false, router_options, temperature, max_tokens} = req.body ?? {};
+    const allowed = new Set(['model','messages','stream','router_options','temperature','max_tokens']);
+    if (typeof model !== 'string' || !model || !Array.isArray(messages) || typeof stream !== 'boolean' || Object.keys(req.body ?? {}).some(k => !allowed.has(k))) throw new UpstreamError(400, 'Invalid or unsupported chat request fields');
+    if ((temperature !== undefined && (typeof temperature !== 'number' || !Number.isFinite(temperature))) || (max_tokens !== undefined && (!Number.isInteger(max_tokens) || max_tokens <= 0))) throw new UpstreamError(400, 'Invalid generation options');
+    if (router_options !== undefined && (router_options === null || typeof router_options !== 'object' || Array.isArray(router_options) || Object.keys(router_options).some(k => k !== 'strategy' && k !== 'siwc_account_id'))) throw new UpstreamError(400, 'Invalid routing options');
+    const provider = model.includes('claude') ? 'anthropic' : /^(gpt|o1|o3|o4|codex)/.test(model) ? 'openai' : null;
+    if (!provider) throw new UpstreamError(400, 'Unsupported provider');
+    return {model, provider, stream, routerOptions:router_options, generationOptions:temperature !== undefined || max_tokens !== undefined, request:{model, messages, temperature, max_tokens}};
+  },
+  start: (provider, auth, parsed, signal, invoke) => infer(provider, auth, parsed.request, undefined, signal, invoke),
+  async respond(events, {model, stream}, {res, signal, settle, touch, observeUsage}) {
+    const id = 'chatcmpl-' + randomUUID(), created = Math.floor(Date.now()/1000);
+    let content = '', finish = 'stop';
+    if (stream) {
+      res.setHeader('Content-Type','text/event-stream'); res.setHeader('Cache-Control','no-cache');
+      const write = async (delta: object, reason: string | null = null) => {
+        const data = {id, object:'chat.completion.chunk', created, model, choices:[{index:0,delta,finish_reason:reason}]};
+        if (!res.write(`data: ${JSON.stringify(data)}\n\n`)) await once(res,'drain', {signal});
+        touch();
+      };
+      await write({role:'assistant'});
+      for await (const e of events) { if (e.text !== undefined) await write({content:e.text}); if (e.finish) finish = e.finish; if (e.usage) observeUsage(e.usage); }
+      await settle();
+      await write({}, finish); res.end('data: [DONE]\n\n');
+    } else {
+      let usage: TokenUsage | undefined;
+      for await (const e of events) { if (e.text !== undefined) content += e.text; if (e.finish) finish = e.finish; if (e.usage) { usage = e.usage; observeUsage(e.usage); } }
+      await settle();
+      res.json({id, object:'chat.completion', created, model, choices:[{index:0,message:{role:'assistant',content},finish_reason:finish}], ...(usage ? {usage:{prompt_tokens:usage.input, completion_tokens:usage.output,total_tokens:usage.input+usage.output}} : {})});
+    }
+  },
+  writeError(res, error, status, aborted) {
+    const validErrorStatus = Number.isInteger(status) && status >= 400 && status <= 599;
+    if (res.headersSent && !aborted && res.getHeader('Content-Type') === 'text/event-stream') res.end(`data: ${JSON.stringify({error:{type:'upstream_error',message:error instanceof UpstreamError ? error.message : 'Upstream request failed'}})}\n\n`);
+    else if (res.headersSent) res.destroy();
+    else res.status(validErrorStatus ? status : 502).json({error:{type:status === 400 ? 'invalid_request_error' : 'upstream_error',message:errorMessage(error)}});
+  },
+};
+
+function passthroughAdapter(protocol: PassthroughProtocol): InferenceAdapter<ParsedPassthrough & ParsedInference, PassthroughResult> {
+  return {
+    allowSiwc: false,
+    parse: req => ({...parsePassthrough(protocol, req), routerOptions: undefined, generationOptions: false}),
+    start: (_provider, auth, parsed, signal, invoke) => startPassthrough(parsed, auth, signal, invoke),
+    async respond(output, _parsed, {res, signal, settle, touch, observeUsage}) {
+      res.status(output.status);
+      for (const [name, value] of Object.entries(output.headers)) res.setHeader(name, value);
+      if (output.kind === 'json') {
+        observeUsage(output.usage);
+        await settle();
+        res.end(output.body);
+        return;
+      }
+      res.flushHeaders();
+      for await (const frame of output.frames) {
+        if (frame.terminal) {
+          // The client terminal is withheld until the attempt is durably settled.
+          observeUsage(frame.usage);
+          await settle();
+          res.end(frame.raw);
+          return;
+        }
+        if (!res.write(frame.raw)) await once(res, 'drain', {signal});
+        touch();
+      }
+      throw new UpstreamError(502, 'Malformed or incomplete upstream stream');
+    },
+    writeError(res, error, status) {
+      const validErrorStatus = Number.isInteger(status) && status >= 400 && status <= 599;
+      if (error instanceof PassthroughHttpError && !res.headersSent) {
+        res.status(error.status);
+        for (const [name, value] of Object.entries(error.forwardHeaders)) res.setHeader(name, value);
+        res.end(error.body);
+      } else if (res.headersSent && !res.destroyed && !res.writableEnded && String(res.getHeader('Content-Type') ?? '').toLowerCase().includes('text/event-stream')) {
+        // The client is still connected (a router timeout, truncation or settlement failure): end the
+        // stream with an explicit error event, or with the provider's own failure frame.
+        // The provider's own failure frame is written only now, after the catch block settled the attempt.
+        if (error instanceof PassthroughStreamFailure) res.end(error.raw);
+        else res.end(routerErrorFrame(protocol, errorMessage(error)));
+      } else if (res.headersSent) res.destroy();
+      else res.status(validErrorStatus ? status : 502).json(routerErrorBody(protocol, validErrorStatus ? status : 502, errorMessage(error)));
+    },
+  };
+}
+const anthropicMessagesAdapter = passthroughAdapter('anthropic-messages');
+export const anthropicErrorBody = (status: number, message: string) => routerErrorBody('anthropic-messages', status, message);
+/**
+ * Claude Code parses Anthropic error envelopes (ADR 0019). Shared router layers
+ * (authentication, quota, shutdown, internal errors) emit `{error:{type,message}}`;
+ * on /v1/messages that shape is rewritten to `{type:'error', error:{type,message}}`.
+ * Provider errors are written with res.end and are never touched.
+ */
+export function anthropicErrorEnvelope(res: Response): void {
+  const json = res.json.bind(res);
+  res.json = (body: any) => {
+    if (body && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 1 && body.error && typeof body.error === 'object' && typeof body.error.message === 'string') {
+      return json(anthropicErrorBody(res.statusCode, body.error.message));
+    }
+    return json(body);
+  };
+}
+
+const responsesAdapter = passthroughAdapter('responses');
+
+export async function forwardChat(req: Request, res: Response) { return runInference(req, res, chatCompletionsAdapter); }
+/** POST /v1/messages: Anthropic Messages passthrough for Claude Code (ADR 0019). */
+export async function forwardMessages(req: Request, res: Response) { return runInference(req, res, anthropicMessagesAdapter); }
+/** POST /v1/responses: OpenAI Responses passthrough for Codex (ADR 0019). */
+export async function forwardResponses(req: Request, res: Response) { return runInference(req, res, responsesAdapter); }
+
+async function runInference<P extends ParsedInference, O>(req: Request, res: Response, adapter: InferenceAdapter<P, O>) {
   const user = req.user!; const started = process.hrtime.bigint(); const controller = new AbortController();
   res.on('close', () => { if (!res.writableEnded) controller.abort(); });
   if (res.destroyed && !res.writableEnded) controller.abort();
@@ -142,11 +292,7 @@ export async function forwardChat(req: Request, res: Response) {
       terminalObserved = true;
       const handle = ordinaryAttempt!;
       try {
-        const duration = response.status === 429
-          ? recovery429Duration(response.headers.get('retry-after') ?? undefined, response.headers.get('date') ?? undefined)
-          : response.status >= 500 && response.status <= 599
-            ? accountPool.shared5xxBackoffMs('upstream', handle.accountId, observed.stateRevision)
-            : undefined;
+        const duration = providerRestrictionMs(response.status, response.headers.get('retry-after') ?? undefined, response.headers.get('date') ?? undefined, handle.accountId, observed.stateRevision);
         await settleAccountAttempt(handle, duration === undefined ? undefined : db => {
           arm429V2(db, 'upstream', handle.accountId, duration);
         });
@@ -162,31 +308,26 @@ export async function forwardChat(req: Request, res: Response) {
     return response;
   };
   try {
-    const {model, messages, stream = false, router_options, temperature, max_tokens} = req.body ?? {};
-    const allowed = new Set(['model','messages','stream','router_options','temperature','max_tokens']);
-    if (typeof model !== 'string' || !model || !Array.isArray(messages) || typeof stream !== 'boolean' || Object.keys(req.body ?? {}).some(k => !allowed.has(k))) throw new UpstreamError(400, 'Invalid or unsupported chat request fields');
-    if ((temperature !== undefined && (typeof temperature !== 'number' || !Number.isFinite(temperature))) || (max_tokens !== undefined && (!Number.isInteger(max_tokens) || max_tokens <= 0))) throw new UpstreamError(400, 'Invalid generation options');
-    if (router_options !== undefined && (router_options === null || typeof router_options !== 'object' || Array.isArray(router_options) || Object.keys(router_options).some(k => k !== 'strategy' && k !== 'siwc_account_id'))) throw new UpstreamError(400, 'Invalid routing options');
-    const provider = model.includes('claude') ? 'anthropic' : /^(gpt|o1|o3|o4|codex)/.test(model) ? 'openai' : null;
-    if (!provider) throw new UpstreamError(400, 'Unsupported provider');
+    const parsed = adapter.parse(req);
+    const {model, provider} = parsed;
+    const router_options = parsed.routerOptions;
     logModel = model; logProvider = provider;
     const excludedUpstream = new Set<string>();
     const excludedSiwc = new Set<string>();
     const canReselect = () => excludedUpstream.size + excludedSiwc.size < 15;
-    let events;
-    const request = {model, messages, temperature, max_tokens};
+    let events: O | undefined;
     selection: while (true) {
     let siwcId = router_options?.siwc_account_id;
     if (siwcId === undefined) {
       const strategy = router_options?.strategy === undefined ? settingsRepo.getStrategy(provider) : router_options.strategy;
       if (!STRATEGIES.includes(strategy)) throw new UpstreamError(400, 'Invalid selection strategy');
-      const candidate = await accountPool.selectCandidate(user.id, model, provider, strategy, {excludeUpstream:excludedUpstream, excludeSiwc:excludedSiwc, credentialTypes:['oauth','api_key'], supportsGenerationOptions:temperature !== undefined || max_tokens !== undefined});
+      const candidate = await accountPool.selectCandidate(user.id, model, provider, strategy, {excludeUpstream:excludedUpstream, excludeSiwc:excludedSiwc, credentialTypes:['oauth','api_key'], supportsGenerationOptions:parsed.generationOptions, includeSiwc:adapter.allowSiwc});
       if (!candidate) throw new UpstreamError(503, 'No supported upstream account available');
       if (candidate.kind === 'siwc') siwcId = candidate.id;
       else account = candidate.account;
     }
     if (siwcId !== undefined) {
-      if (typeof siwcId !== 'string' || !siwcId.trim() || provider !== 'openai' || (router_options?.siwc_account_id !== undefined && Object.keys(router_options).some(k => k !== 'siwc_account_id'))) throw new UpstreamError(400, 'Invalid SIWC account selection');
+      if (!adapter.allowSiwc || typeof siwcId !== 'string' || !siwcId.trim() || provider !== 'openai' || (router_options?.siwc_account_id !== undefined && Object.keys(router_options).some(k => k !== 'siwc_account_id'))) throw new UpstreamError(400, 'Invalid SIWC account selection');
       const db = getDb();
       // Missing policies, disabled accounts, and absent grants all fail closed.
       const canAccess = (connection = db) => siwcAccess(connection, user.id, siwcId);
@@ -220,7 +361,7 @@ export async function forwardChat(req: Request, res: Response) {
       // Bounds admission; dispatch re-arms the first-response limit.
       arm('first-response');
       const expected = snapshot;
-      try { events = await infer('openai', {kind:'siwc', token:expected.credential.accessToken}, request, undefined, controller.signal, async start => {
+      try { events = await adapter.start('openai', {kind:'siwc', token:expected.credential.accessToken}, parsed, controller.signal, async start => {
         let pending: Promise<globalThis.Response> | undefined;
         let started = false;
         try {
@@ -295,7 +436,7 @@ export async function forwardChat(req: Request, res: Response) {
     usedToken = auth.token;
     // Bounds admission; dispatch re-arms the first-response limit.
     arm('first-response');
-    try { events = await infer(provider, auth, request, undefined, controller.signal, start => invokeOrdinary(auth.observedAccount, start)); }
+    try { events = await adapter.start(provider, auth, parsed, controller.signal, start => invokeOrdinary(auth.observedAccount, start)); }
     catch (error) {
       if ((error === committedConflict || error === committedQuotaExhaustion) && !ordinaryDispatched && !auth.refreshConsidered && auth.observedAccount.stateRevision === account.stateRevision && auth.observedAccount.credentialRevision === account.credentialRevision && canReselect()) {
         controller.signal.throwIfAborted();
@@ -312,35 +453,18 @@ export async function forwardChat(req: Request, res: Response) {
       observedAccount = refreshed.observedAccount;
       if (refreshed.kind !== 'oauth') throw new UpstreamError(400, 'Invalid refreshed credentials');
       usedToken = refreshed.token;
-      events = await infer(provider, refreshed, request, undefined, controller.signal, start => invokeOrdinary(refreshed.observedAccount, start, false));
+      events = await adapter.start(provider, refreshed, parsed, controller.signal, start => invokeOrdinary(refreshed.observedAccount, start, false));
     }
     }
     break;
     }
-    const id = 'chatcmpl-' + randomUUID(), created = Math.floor(Date.now()/1000);
-    let content = '', finish = 'stop';
-    if (stream) {
-      res.setHeader('Content-Type','text/event-stream'); res.setHeader('Cache-Control','no-cache');
-      const write = async (delta: object, reason: string | null = null) => {
-        const data = {id, object:'chat.completion.chunk', created, model, choices:[{index:0,delta,finish_reason:reason}]};
-        if (!res.write(`data: ${JSON.stringify(data)}\n\n`)) await once(res,'drain', {signal:controller.signal});
-        touch();
-      };
-      await write({role:'assistant'});
-      for await (const e of events) { if (e.text !== undefined) await write({content:e.text}); if (e.finish) finish = e.finish; if (e.usage) usage = e.usage; }
+    const settle = async () => {
       terminalObserved = true;
       if (ordinaryAttempt) { await settleAccountAttempt(ordinaryAttempt); ordinaryAttempt = undefined; }
       if (siwcAttempt) { await settleSiwc(siwcAttempt); siwcAttempt = undefined; }
       controller.signal.throwIfAborted(); sampleCompletion();
-      await write({}, finish); res.end('data: [DONE]\n\n');
-    } else {
-      for await (const e of events) { if (e.text !== undefined) content += e.text; if (e.finish) finish = e.finish; if (e.usage) usage = e.usage; }
-      terminalObserved = true;
-      if (ordinaryAttempt) { await settleAccountAttempt(ordinaryAttempt); ordinaryAttempt = undefined; }
-      if (siwcAttempt) { await settleSiwc(siwcAttempt); siwcAttempt = undefined; }
-      controller.signal.throwIfAborted(); sampleCompletion();
-      res.json({id, object:'chat.completion', created, model, choices:[{index:0,message:{role:'assistant',content},finish_reason:finish}], ...(usage ? {usage:{prompt_tokens:usage.input, completion_tokens:usage.output,total_tokens:usage.input+usage.output}} : {})});
-    }
+    };
+    await adapter.respond(events as O, parsed, {res, signal:controller.signal, model, settle, touch, observeUsage:u => { if (u) usage = u; }});
     logSuccess = true; logStatus = 200;
     if (siwcSelected && siwcDispatchedRevision !== undefined && !controller.signal.aborted) {
       try { accountPool.recordSiwcSuccess(siwcSelected, siwcDispatchedRevision, siwcFailureMarker); }
@@ -360,6 +484,17 @@ export async function forwardChat(req: Request, res: Response) {
     // Snapshot before any await: a provider failure reaches this point through
     // microtasks only, so a later client close or timer cannot be misattributed.
     const routerAborted = controller.signal.aborted;
+    // ADR 0019: a validated provider failure inside a 200 stream is a provider
+    // terminal, settled like the equivalent HTTP status (no in-stream hints).
+    if (error instanceof PassthroughStreamFailure && ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt) {
+      terminalObserved = true;
+      const handle = ordinaryAttempt;
+      try {
+        const duration = providerRestrictionMs(error.status, undefined, undefined, handle.accountId, (observedAccount ?? account)?.stateRevision);
+        await settleAccountAttempt(handle, duration === undefined ? undefined : db => arm429V2(db, 'upstream', handle.accountId, duration));
+        ordinaryAttempt = undefined;
+      } catch { error = new UpstreamError(503, 'Unable to settle upstream outcome'); }
+    }
     if (siwcAttempt && isSiwcStream429(error)) {
       terminalObserved = true;
       try { await settleSiwc(siwcAttempt, {}); siwcAttempt = undefined; }
@@ -394,14 +529,12 @@ export async function forwardChat(req: Request, res: Response) {
       catch (recordError) { logger.error({error:recordError}, 'Failed to record SIWC failure'); }
     }
     logger.error({status:logStatus, userId:user.id, ...(timedOut ? {routerTimeout:timedOut} : {})}, 'Inference request failed');
-    if (!res.headersSent && status === 429 && error instanceof UpstreamError && error.headers?.['retry-after'] !== undefined) {
+    if (!res.headersSent && status === 429 && error instanceof UpstreamError && !(error instanceof PassthroughHttpError) && error.headers?.['retry-after'] !== undefined) {
       const now = Date.now();
       const deadline = ordinary429Deadline(now, error.headers['retry-after'], error.headers.date);
       if (deadline !== Number.MAX_SAFE_INTEGER) res.setHeader('Retry-After', String(Math.ceil((deadline - now) / 1000)));
     }
-    if (res.headersSent && !controller.signal.aborted && res.getHeader('Content-Type') === 'text/event-stream') res.end(`data: ${JSON.stringify({error:{type:'upstream_error',message:error instanceof UpstreamError ? error.message : 'Upstream request failed'}})}\n\n`);
-    else if (res.headersSent) res.destroy();
-    else res.status(validErrorStatus ? status : 502).json({error:{type:status === 400 ? 'invalid_request_error' : 'upstream_error',message:error instanceof RefreshIntentError ? 'Token refresh is in progress or its outcome is uncertain; retry later or reauthenticate' : error instanceof UpstreamError ? error.message : 'Upstream request failed'}});
+    adapter.writeError(res, error, status, controller.signal.aborted);
     if (shouldRecordFailure && account) {
       try { await accountPool.recordFailureAsync(account.id, {status, message:`Upstream request failed (${status})`}, observedAccount ?? account, usedToken, controller.signal); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record upstream failure'); }

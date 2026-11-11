@@ -79,7 +79,7 @@ async function fixture() {
     const quota = used => check(JSON.stringify(counts()) === JSON.stringify(used ? [{user_id:user.id, day:'2031-07-01', used}] : []), 'utc');
     let calls = 0, selections = 0, throwForward = false;
     const responses = [];
-    const router = load('../src/routes/v1.ts', {express, '../config/env.js': {env: {NODE_ENV: 'test'}}, '../auth/user-auth.js': auth, '../request-work.js': {requestWork: manager}, '../utils/logger.js': {logger}, '../upstream/forward-chat.js': {forwardChat: (req, res) => {
+    const router = load('../src/routes/v1.ts', {express, '../config/env.js': {env: {NODE_ENV: 'test'}}, '../auth/user-auth.js': auth, '../request-work.js': {requestWork: manager}, '../utils/logger.js': {logger}, '../upstream/forward-chat.js': {forwardMessages(_req,res){res.status(501).json({error:{type:'not_implemented',message:'fixture'}});},forwardResponses(_req,res){res.status(501).json({error:{type:'not_implemented',message:'fixture'}});},anthropicErrorEnvelope(){},anthropicErrorBody:(_s,message)=>({type:'error',error:{type:'api_error',message}}),forwardChat: (req, res) => {
       calls++;
       check(req.user?.id === user.id);
       // Simulated pre-dispatch selection and reselection, not the production selector.

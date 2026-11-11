@@ -25,7 +25,7 @@ function fixture({ throwInfo = false, throwError = false, throwConnections = fal
     error(...args) { events.push(['error', ...args]); if (throwError) throw Error('sensitive error detail'); },
   };
   const dependencies = {
-    express: { default: express }, './config/env.js': { env: {} }, './utils/logger.js': { logger },
+    express: { default: express }, './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js': { env: {} }, './utils/logger.js': { logger },
     './upstream/oauth.js': { stopOAuth() { events.push('oauth'); if (throwOAuth) throw Error('sensitive oauth detail'); if (rejectOAuth) return Promise.reject(Error('sensitive oauth detail')); return done; } },
     './upstream/siwc-login.js': { stopSiwc() { events.push('siwc'); return done; }, noStoreSiwc() {} },
     './upstream/tokens.js': { drainTokenRefreshes() { events.push('refresh'); return done; } },
@@ -159,7 +159,7 @@ test('hard shutdown deadline exits nonzero without closing an active database', 
   const logger = { info() {}, error() {} };
   const never = new Promise(() => {});
   const dependencies = {
-    express: { default: express }, './config/env.js': { env: {} }, './utils/logger.js': { logger },
+    express: { default: express }, './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js': { env: {} }, './utils/logger.js': { logger },
     './upstream/oauth.js': { stopOAuth: () => never },
     './upstream/siwc-login.js': { stopSiwc: () => never, noStoreSiwc() {} },
     './upstream/tokens.js': { drainTokenRefreshes: () => never },

@@ -9,9 +9,11 @@ if (process.argv[2] !== '--fixture') {
     let stage = 'startup', failed = false, timeout = false;
     child.on('message', value => { if (['normal', 'stop', 'reentrant', 'checkpoint-normal', 'checkpoint-mutant', 'checkpoint-checked', 'errors', 'complete'].includes(value)) stage = value; });
     child.on('error', () => { failed = true; });
-    const timer = setTimeout(() => { timeout = true; child.kill(); }, 20000);
+    // The fixture child is CPU-bound (~8s idle); under a parallel full-suite run it reached the old 20s
+    // kill timer. This test checks ownership/exit semantics, not speed; the timer only bounds a hang.
+    const timer = setTimeout(() => { timeout = true; child.kill(); }, 60000);
     const result = await new Promise(resolve => {
-      const deadline = setTimeout(() => resolve(null), 25000);
+      const deadline = setTimeout(() => resolve(null), 65000);
       child.once('close', (code, signal) => { clearTimeout(deadline); resolve({ code, signal }); });
     });
     clearTimeout(timer);

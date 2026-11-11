@@ -48,6 +48,7 @@ function fixture(mode, fault = {}) {
     if (name === '../db/account-429-v2-store.js') return {assert429V2Schema() {}, arm429V2() {}};
     if (name === './ordinary-429-deadline.js') return ordinaryDeadline;
     if (name === './inference.js') return {UpstreamError, infer:async (_p,auth,_r,_x,_s,invoke) => { if (mode === 'generic') throw new quota.AccountQuotaExhausted(); if (fault.where === 'before-provider') throw new quota[fault.kind](); await invoke(() => { starts.push(auth.observedAccount.id); if (fault.where === 'provider') throw new quota[fault.kind](); if (mode === 'provider') throw new quota.AccountQuotaExhausted(); if (mode === 'provider-async') return Promise.reject(new quota.AccountQuotaExhausted()); return Promise.resolve(new Response()); }); return (async function*(){ yield {text:'ok'}; })(); }, isSiwcStream429:()=>false};
+    if (name === './passthrough.js') return {parsePassthrough(){throw new Error('passthrough unused');},startPassthrough(){throw new Error('passthrough unused');},PassthroughHttpError:class extends Error{},PassthroughStreamFailure:class extends Error{},routerErrorBody:()=>({}),routerErrorFrame:()=>''};
     if (name === 'crypto') return {randomUUID:()=> 'attempt'};
     if (name === 'events') return {once:async()=>{}};
     return undefined;

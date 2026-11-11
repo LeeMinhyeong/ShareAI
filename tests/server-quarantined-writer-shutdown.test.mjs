@@ -35,7 +35,7 @@ function harness({ retry = () => {}, loggerThrows = false, tokenDrain = () => Pr
   };
   const modules = {
     express,
-    './config/env.js': { env: {} },
+    './http/raw-body.js':{captureRawBody(){},JSON_BODY_LIMIT:'10mb'},'./config/env.js': { env: {} },
     './utils/logger.js': { logger },
     './upstream/oauth.js': { stopOAuth() { events.push('oauth'); return Promise.resolve(); } },
     './upstream/siwc-login.js': { stopSiwc() { events.push('siwc'); return Promise.resolve(); }, noStoreSiwc() {} },

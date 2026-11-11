@@ -3,6 +3,7 @@
  */
 
 import express from 'express';
+import { captureRawBody, JSON_BODY_LIMIT } from './http/raw-body.js';
 import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { stopOAuth } from './upstream/oauth.js';
@@ -40,7 +41,7 @@ if (env.CORS_ORIGIN) {
   });
 }
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: JSON_BODY_LIMIT, verify: captureRawBody }));
 
 // 헬스체크
 app.get('/health', (req, res) => {

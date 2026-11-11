@@ -35,7 +35,7 @@ function fixture(opts={}) {
     '../utils/encryption.js':{hashApiKey:()=> 'hash'}, '../utils/logger.js':{logger}, '../config/env.js':{env:{}},
     '../db/async-writer.js':{withAsyncWriter:async (fn,options)=>{started.resolve(options.signal); if(opts.holdQuota) await release.promise; if(opts.failQuota) throw new Error('synthetic-secret'); return fn({});}}, '../request-work.js':work
   });
-  const v1=load('src/routes/v1.ts',{express,'../config/env.js':{env:{NODE_ENV:'test'}},'../auth/user-auth.js':auth,'../upstream/forward-chat.js':{forwardChat:async (_req,res)=>{calls++;if(opts.throwHandler) throw new Error('synthetic-secret');res.json({ok:true});handlerStarted.resolve();if(opts.holdHandler) await handlerRelease.promise;}},'../request-work.js':work,'../utils/logger.js':{logger}}).default;
+  const v1=load('src/routes/v1.ts',{express,'../config/env.js':{env:{NODE_ENV:'test'}},'../auth/user-auth.js':auth,'../upstream/forward-chat.js':(()=>{const forward=async (_req,res)=>{calls++;if(opts.throwHandler) throw new Error('synthetic-secret');res.json({ok:true});handlerStarted.resolve();if(opts.holdHandler) await handlerRelease.promise;}; return {forwardChat:forward,forwardMessages:forward,forwardResponses:forward,anthropicErrorEnvelope(){},anthropicErrorBody:(_s,message)=>({type:'error',error:{type:'api_error',message}})};})(),'../request-work.js':work,'../utils/logger.js':{logger}}).default;
   const app=express();app.use('/v1',v1);app.get('/other',(_req,res)=>res.json({other:true}));
   for(let i=0;i<(opts.errorLayers||0);i++) app.use((error,_req,_res,next)=>next(error));
   if(opts.errorHandler) app.use(work.trackedErrorHandler(opts.errorHandler));
@@ -49,7 +49,7 @@ function fixture(opts={}) {
 }
 test('each finite authenticated v1 route has one owned endpoint',()=>{
  const f=fixture();
- for(const path of ['/models','/messages','/chat/completions']) {
+ for(const path of ['/models','/messages','/responses','/chat/completions']) { // /responses: ADR 0019
   const route=f.v1.stack.find(layer=>layer.route?.path===path)?.route;
   assert.ok(route,`missing ${path}`);
   assert.equal(route.stack.length,1,`${path} must not hand off from auth to handler through Express next()`);
@@ -68,7 +68,9 @@ test('successful forwarding, missing and invalid keys, quota and known contracts
   {opts:{limit:true},method:'POST',path:'/v1/chat/completions',status:429,expected:{error:{type:'rate_limit_exceeded',message:'Daily limit of 10 requests exceeded. Current usage: 10.'}},calls:0},
   {opts:{failQuota:true},method:'POST',path:'/v1/chat/completions',status:503,expected:{error:{type:'service_unavailable',message:'Unable to reserve daily quota.'}},calls:0},
   {opts:{},method:'GET',path:'/other',status:200,expected:{other:true},calls:0},
-  {opts:{},method:'POST',path:'/v1/messages',status:501,expected:{error:{type:'not_implemented',message:'Anthropic Messages API will be implemented soon.'}},calls:0},
+  // ADR 0019: /v1/messages and /v1/responses are owned inference endpoints (no longer a 501 placeholder).
+  {opts:{},method:'POST',path:'/v1/messages',status:200,expected:{ok:true},calls:1},
+  {opts:{},method:'POST',path:'/v1/responses',status:200,expected:{ok:true},calls:1},
   {opts:{},method:'GET',path:'/v1/models',status:200,calls:0},
  ]) {
   const f=fixture(scenario.opts), r=f.request(scenario.method,scenario.path,scenario.key);

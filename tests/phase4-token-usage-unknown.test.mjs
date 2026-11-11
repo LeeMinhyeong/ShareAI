@@ -145,6 +145,7 @@ const stubs={
   'utils/encryption.ts':{CredentialVault:class{}},'upstream/siwc-store.ts':{SiwcStore:class{}},
   'upstream/siwc-refresh.ts':{refreshSiwcSnapshot(){}},
   'db/repositories/settings.ts':{SettingsRepository:class{getStrategy(){return 'priority'}},STRATEGIES:['priority']},
+  'upstream/passthrough.ts':{parsePassthrough(){throw new Error('passthrough unused');},startPassthrough(){throw new Error('passthrough unused');},PassthroughHttpError:class extends Error{},PassthroughStreamFailure:class extends Error{},routerErrorBody:()=>({}),routerErrorFrame:()=>''},
   'upstream/ordinary-429-deadline.ts':{ordinary429Deadline(){return Number.MAX_SAFE_INTEGER},recovery429Duration(){return null}},
 };
 const schema=await moduleFor('db/schema.ts'); await schema.evaluate(); db.exec(schema.namespace.SQL_SCHEMA);

@@ -23,6 +23,8 @@ export interface SelectOptions {
   excludeSiwc?: Set<string>;
   credentialTypes?: CredentialType[];
   supportsGenerationOptions?: boolean;
+  /** Passthrough endpoints (ADR 0019) never select SIWC accounts. Default true. */
+  includeSiwc?: boolean;
 }
 
 interface RotationState {
@@ -186,7 +188,7 @@ export class AccountPoolManager {
     // UTC-ranked strategies replace it below, so avoid the correlated count entirely.
     const legacyCount = strategy === 'round_robin';
     const countExpression = legacyCount ? '(SELECT COUNT(*) FROM siwc_usage_logs l WHERE l.account_id=a.id AND l.success=1 AND l.timestamp>=?)' : '0';
-    let siwc = exists && exists.n === 2 && !opts.supportsGenerationOptions && (!opts.credentialTypes || opts.credentialTypes.includes('oauth')) ? db.prepare(`SELECT a.id, COALESCE(r.priority,0) AS priority, COALESCE(r.weight,1) AS weight, ${countExpression} AS usedToday
+    let siwc = exists && exists.n === 2 && opts.includeSiwc !== false && !opts.supportsGenerationOptions && (!opts.credentialTypes || opts.credentialTypes.includes('oauth')) ? db.prepare(`SELECT a.id, COALESCE(r.priority,0) AS priority, COALESCE(r.weight,1) AS weight, ${countExpression} AS usedToday
       FROM siwc_accounts a JOIN siwc_credentials c ON c.id=a.id JOIN siwc_access_policy p ON p.account_id=a.id LEFT JOIN siwc_routing_settings r ON r.account_id=a.id
       JOIN users u ON u.id=? AND u.enabled=1 WHERE p.enabled=1 AND (p.scope='all' OR (p.scope='selected' AND EXISTS
       (SELECT 1 FROM siwc_access_users g WHERE g.account_id=a.id AND g.user_id=u.id))) ORDER BY a.id`).all(...(legacyCount ? [new Date(new Date().setHours(0,0,0,0)).toISOString(), userId] : [userId])) as {id:string;priority:number;weight:number;usedToday:number}[] : [];
