@@ -310,7 +310,7 @@ multi-account-router/
 - [x] Phase 4 안전 속성 승계(인증·한도·ACL·OPEN·429/5xx 제한·Esc 전환·시간 제한·401 갱신·종료 drain·사용량)
 - [x] 프로토콜별 엄격한 종료 판정, 공급자 오류·헤더 전달(사용자 결정 3B·4B. 헤더는 리뷰에 따라 허용 목록 방식)
 - [x] README 클라이언트 설정 안내
-- [ ] 실제 클라이언트×실제 계정 4조합 확인(사용자 실행)
+- [ ] 실제 클라이언트×실제 계정 4조합 확인(사용자 실행) — 절차: [docs/phase5-real-verification.md](docs/phase5-real-verification.md), 도구: `scripts/phase5-verify.mjs`
 - [x] 독립 리뷰·재리뷰 PASS(deleg_aec37528 → b02008e9 → 5fe04403), 격리 전체 테스트 246/267(새 실패 0, 보류 21)
 - **완료 후 추가 개발:** 교차 공급자 변환(Claude Code→OpenAI 계정, Codex→Anthropic 계정)
 
