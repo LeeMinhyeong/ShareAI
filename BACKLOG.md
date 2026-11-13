@@ -249,5 +249,11 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 - (deleg_76598e69) 전송 직전에 키 문자를 검사하므로, 예전에 검증 없이 저장된 Claude API 키(끝에 공백이 붙은 값 등)는 요청마다 라우터 400이 된다. 이 400은 계정 실패로 기록되지 않아 계정이 풀에 남는다. 운영 DB를 옮길 때 저장된 Anthropic `api_key` 자격증명을 새 규칙으로 한 번 점검한다.
 - (deleg_617cf01e) 전체 일치는 공급자가 문구를 한 글자만 바꿔도 감지가 조용히 빠진다. 앞부분은 맞는데 전체가 다른 400을 상태 변경 없이 횟수만 세거나 경고로 남기면 알아챌 수 있다. 메시지 원문은 클라이언트가 정할 수 있으므로 기록하지 않고 빈도도 제한한다.
 - (deleg_76598e69, deleg_7b488d6f) 소진·워크스페이스 400 판정은 공급자 메시지 전체 일치에 의존한다. 실제 400 본문을 받으면 상수와 테스트 픽스처를 그 전문으로 고정한다. 문구에 의존하지 않으려면, 의심스러운 400을 받았을 때 라우터가 고정 본문으로 직접 확인 요청을 보내 같은 오류가 재현될 때만 계정을 끄는 방법이 있다(구현 범위가 크다).
-- (deleg_f1643676) 구독 계정 쪽에는 대칭 검사가 없다. `credentials.json` 형식 안의 `accessToken`에 API 키가 들어 있으면 Bearer와 OAuth 베타 헤더로 전송된다. 가져오기 거부 사유는 응답에 나오지 않는다(항상 `Could not import credentials`). 안전한 사유 코드를 싣는 방안을 검토한다.
+- (deleg_f1643676) 구독 계정 쪽에는 대칭 검사가 없다. `credentials.json` 형식 안의 `accessToken`에 API 키가 들어 있으면 Bearer와 OAuth 베타 헤더로 전송된다.
+- 계정 이름 중복을 알려 주는 것은 `POST /admin/accounts/import`뿐이다(409 `account_name_taken`). 나머지 두 등록 경로는 그대로다.
+  - 브라우저 로그인(`/admin/accounts/oauth/start` → `finish`): 이름이 이미 있어도 시작 단계에서 막지 않는다. 브라우저 로그인을 끝낸 뒤 저장 단계에서 실패하고, 사유 없이 `Login failed; ...`만 나온다. 시작 단계에서 이름을 먼저 확인하고, 저장 단계 실패에도 같은 사유 코드를 싣는다.
+  - `POST /admin/accounts`: 이름이 중복되면 500 `Failed to process admin account request`가 나온다.
+- 가져오기 형식 오류는 사유 코드가 하나(`credential_format_unrecognized`)다. JSON이 중간에 잘린 경우("파일 내용을 전부 복사했는지")처럼 파서가 구분하던 세부 사유는 응답에 나오지 않는다. 다시 헷갈리면 코드를 나눈다.
+- 가져오기 사유 판정은 저장 단계 전체(DB 연결, 암호화, INSERT)를 한 단계로 본다. SQLite의 `UNIQUE constraint failed: upstream_accounts.name` 오류만 이름 중복으로 보고, 그 밖의 저장 실패는 계속 `Could not import credentials`(400)로 나간다. 서버 쪽 실패인데 400인 점은 그대로다.
+- "쓸 수 있는 계정 없음" 503은 Claude Code 형식에서 오류 종류가 `overloaded_error`로 나간다(`routerErrorBody`). Claude Code는 이를 일시적 과부하로 보고 10번 재시도한 뒤 "Repeated 529 Overloaded errors"를 보여 준다. 계정이 `error`·`disabled`라서 기다려도 풀리지 않는 경우와 Esc 뒤 60초 제한처럼 곧 풀리는 경우를 구분해서 보낸다. 실제 확인 중 발견(2026-11-13).
 - 접두사 규칙은 `oauth.ts`, `inference.ts`, `passthrough.ts` 세 곳에 같은 정규식으로 적혀 있다. VM 테스트의 의존성 허용 목록 때문에 공유 모듈로 빼지 않았고, 세 곳이 같은지는 테스트가 비교한다.

@@ -296,3 +296,78 @@ test('messages: a crafted request whose unknown field name is the provider wordi
     assert.equal(state(a.id).lastError, null);
   }
 });
+
+// Import refusals name their reason with a fixed code and text, so an administrator can tell a taken
+// account name from an unusable credential. The answer never echoes the submitted credential.
+const importAs = (provider, name, credentials) => admin('POST', '/admin/accounts/import', {name, provider, credentials});
+function assertRefusal(res, status, code, credential, label) {
+  assert.equal(res.status, status, label);
+  assert.deepEqual(Object.keys(res.json.error).sort(), ['code', 'message'], label);
+  assert.equal(res.json.error.code, code, label);
+  assert.ok(typeof res.json.error.message === 'string' && res.json.error.message.length > 0, label);
+  const body = JSON.stringify(res.json);
+  for (const part of [credential.trim(), credential.trim().slice(-12)]) if (part.length >= 8) assert.ok(!body.includes(part), `${label}: the answer must not echo the credential`);
+  // The verification checklist tells the user what each answer means; keep its table in step with the texts.
+  assert.ok(checklist.includes(`\`${res.status} ${res.json.error.message.split('. ')[0]}`), `${label}: docs/phase5-real-verification.md lists this answer`);
+}
+const checklist = readFileSync(new URL('../docs/phase5-real-verification.md', import.meta.url), 'utf8');
+
+test('import: a taken account name is refused with 409 account_name_taken and nothing changes', async () => {
+  const first = key('usr', 'd'), second = key('usr', 'e');
+  const created = await importAs('anthropic', 'dup-name', first);
+  assert.equal(created.status, 201);
+  const before = repo.findAll().length;
+  assertRefusal(await importAs('anthropic', 'dup-name', second), 409, 'account_name_taken', second, 'same provider');
+  // Names are unique across providers, and surrounding spaces do not make a new name.
+  const openaiCredential = ['sk', 'proj', 'n'.repeat(40)].join('-');
+  assertRefusal(await importAs('openai', 'dup-name', openaiCredential), 409, 'account_name_taken', openaiCredential, 'other provider');
+  assertRefusal(await importAs('anthropic', '  dup-name ', second), 409, 'account_name_taken', second, 'padded name');
+  assert.equal(repo.findAll().length, before, 'nothing was stored');
+  only(created.json.account.id);
+  upstream(() => sse(claudeFrames));
+  assert.equal((await send('/v1/messages', msgBody, claudeHeaders)).status, 200);
+  assert.equal(calls[0].headers['x-api-key'], first, 'the existing account keeps its credential');
+  // The refused credential itself was fine: it imports under a free name.
+  assert.equal((await importAs('anthropic', 'dup-name-2', second)).status, 201);
+});
+
+test('import: an unusable credential is refused with 400 and a reason code', async () => {
+  const before = repo.findAll().length;
+  const usr = key('usr', 'm');
+  const cases = [
+    ['anthropic', 'not a key at all', 'credential_format_unrecognized'],
+    ['anthropic', '   ', 'credential_format_unrecognized'],
+    ['anthropic', key('ort01', 'r'), 'credential_format_unrecognized'],
+    ['anthropic', key('sid01', 's'), 'credential_format_unrecognized'],
+    ['anthropic', usr.slice(0, 20) + '\n' + usr.slice(20), 'credential_format_unrecognized'],
+    ['anthropic', '{"claudeAiOauth":{"accessToken":"' + 'j'.repeat(30), 'credential_format_unrecognized'],
+    ['anthropic', JSON.stringify({claudeAiOauth:{refreshToken:'k'.repeat(30)}}), 'credential_format_unrecognized'],
+    ['anthropic', key('admin01', 'a'), 'admin_key_not_supported'],
+    ['openai', usr, 'credential_provider_mismatch'],
+    ['openai', 'garbage-' + 'g'.repeat(30), 'credential_format_unrecognized'],
+    ['openai', '{"tokens":{"access_token":"' + 'h'.repeat(30), 'credential_format_unrecognized'],
+  ];
+  for (const [i, [provider, credential, code]] of cases.entries()) {
+    assertRefusal(await importAs(provider, `refused-${i}`, credential), 400, code, credential, `${provider} case ${i}`);
+  }
+  // The credential is checked before the name: a bad credential under a taken name reports the credential.
+  assertRefusal(await importAs('anthropic', 'dup-name', key('admin01', 'b')), 400, 'admin_key_not_supported', key('admin01', 'b'), 'bad credential, taken name');
+  assert.equal(repo.findAll().length, before, 'nothing was stored');
+});
+
+test('import: any other storage failure keeps the generic answer and is not reported as a taken name', async () => {
+  const before = repo.findAll().length;
+  const generic = res => { assert.equal(res.status, 400); assert.deepEqual(res.json, {error:{message:'Could not import credentials'}}); };
+  // A failure that only borrows the wording (not a UNIQUE violation).
+  db.exec(`CREATE TEMP TRIGGER import_wording BEFORE INSERT ON main.upstream_accounts WHEN NEW.name = 'trigger-name'
+    BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: upstream_accounts.name'); END`);
+  try { generic(await importAs('anthropic', 'trigger-name', key('usr', 't'))); }
+  finally { db.exec('DROP TRIGGER import_wording'); }
+  // A real UNIQUE violation on another column.
+  db.exec(`CREATE UNIQUE INDEX import_other_unique ON upstream_accounts(weight) WHERE name LIKE 'idx-%'`);
+  try {
+    assert.equal((await importAs('anthropic', 'idx-a', key('usr', 'u'))).status, 201);
+    generic(await importAs('anthropic', 'idx-b', key('usr', 'v')));
+  } finally { db.exec('DROP INDEX import_other_unique'); }
+  assert.equal(repo.findAll().length, before + 1, 'only idx-a was stored');
+});

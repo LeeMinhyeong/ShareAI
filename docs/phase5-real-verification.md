@@ -56,6 +56,20 @@ node scripts/phase5-verify.mjs import-env openai openai-api P5_OPENAI_KEY
 node scripts/phase5-verify.mjs status                # 4개가 active / no_known_block 인지 확인
 ```
 
+`import`·`import-env`가 거부되면 사유가 함께 나온다.
+
+| 출력 | 뜻 | 할 일 |
+|---|---|---|
+| `409 An account with this name already exists. ...` | 같은 이름의 계정이 이미 있다(이름은 공급자와 무관하게 하나만) | `status`로 확인하고 다른 이름으로 등록 |
+| `400 Credential format not recognized for this provider.` | 키나 파일 내용의 형식을 인식하지 못했다 | 값을 끝까지 복사했는지, 공급자를 맞게 골랐는지 확인 |
+| `400 Admin API keys cannot run inference. ...` | Admin 키(`sk-ant-admin...`)다 | 일반 API 키를 발급 |
+| `400 This is a Claude key. ...` | Claude 키를 `openai` 계정으로 등록하려 했다 | 공급자를 `anthropic`으로 |
+| `400 Could not import credentials` | 그 밖의 저장 실패(사유는 응답에도 로그에도 남지 않는다) | 다시 시도하고, 같으면 그대로 보고 |
+
+- 자격증명을 이름보다 먼저 검사한다. 둘 다 문제면 자격증명 사유가 먼저 나오고, 고친 뒤에 이름 사유가 나온다.
+- 이름은 대소문자를 구분한다(`Claude-API`와 `claude-api`는 다른 이름).
+- 응답 본문은 `{"error":{"code":"...","message":"..."}}`다. `code`는 사유를 알 때만 있고, 마지막 줄의 일반 응답에는 없다.
+
 조합마다 **그 계정만 활성화**한 뒤 시험한다: `node scripts/phase5-verify.mjs only <계정ID>`
 
 ## 3. 클라이언트 설정

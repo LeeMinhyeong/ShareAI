@@ -105,6 +105,16 @@ function build(creds: OAuthCredentials, meta: AccountMeta): ParsedCredential {
 // ---------------------------------------------------------------------------
 
 /**
+ * Why an import was refused, for the admin API to show. The code is chosen here from a fixed set and
+ * never derived from the submitted text; the admin route maps it to a fixed message. Any other error
+ * raised while importing carries no code and stays behind the route's generic answer.
+ */
+export type ImportRefusalCode = 'credential_format_unrecognized' | 'admin_key_not_supported' | 'credential_provider_mismatch';
+function refuse(message: string, importCode: ImportRefusalCode = 'credential_format_unrecognized'): never {
+  throw Object.assign(new Error(message), { importCode });
+}
+
+/**
  * 사용자가 붙여넣은 텍스트를 자격증명으로 변환.
  *  Claude:
  *   - ~/.claude/.credentials.json 내용   {"claudeAiOauth":{accessToken,refreshToken,expiresAt,subscriptionType}}
@@ -116,13 +126,13 @@ function build(creds: OAuthCredentials, meta: AccountMeta): ParsedCredential {
  */
 export function parseImportedCredential(provider: OAuthProvider, input: string): ParsedCredential {
   const text = (input || '').trim();
-  if (!text) throw new Error('자격증명이 비어 있습니다.');
+  if (!text) refuse('자격증명이 비어 있습니다.');
 
   if (provider === 'anthropic') {
     if (/^sk-ant-oat[A-Za-z0-9_-]+$/.test(text)) {
       return build({ kind: 'oauth', accessToken: text, refreshToken: null, expiresAt: null }, { source: 'setup_token' });
     }
-    if (text.startsWith('sk-ant-admin')) throw new Error('Admin API 키는 추론에 쓸 수 없습니다. 일반 API 키를 넣어주세요.');
+    if (text.startsWith('sk-ant-admin')) refuse('Admin API 키는 추론에 쓸 수 없습니다. 일반 API 키를 넣어주세요.', 'admin_key_not_supported');
     // Any other Claude key (personal `sk-ant-usr-`, legacy workspace `sk-ant-api..`, ...). Same literal
     // as inference.ts and passthrough.ts (a test compares them); a bare refresh token (`ort`) or a
     // claude.ai session cookie (`sid`) is not a usable credential.
@@ -143,13 +153,13 @@ export function parseImportedCredential(provider: OAuthProvider, input: string):
         { source: 'claude_credentials', plan: o.subscriptionType ?? null }
       );
     }
-    throw new Error(
+    refuse(
       'Claude 자격증명 형식을 인식하지 못했습니다. ~/.claude/.credentials.json 내용, `claude setup-token` 토큰(sk-ant-oat...), 또는 API 키를 넣어주세요.'
     );
   }
 
   // openai
-  if (text.startsWith('sk-ant-')) throw new Error('Claude 키는 OpenAI 계정으로 등록할 수 없습니다.');
+  if (text.startsWith('sk-ant-')) refuse('Claude 키는 OpenAI 계정으로 등록할 수 없습니다.', 'credential_provider_mismatch');
   if (/^sk-[A-Za-z0-9_-]{20,}$/.test(text)) {
     return { credentialType: 'api_key', credentials: text, meta: { source: 'api_key' } };
   }
@@ -182,7 +192,7 @@ export function parseImportedCredential(provider: OAuthProvider, input: string):
       { source: 'access_token', email: ident.email, plan: ident.plan }
     );
   }
-  throw new Error(
+  refuse(
     'ChatGPT 자격증명 형식을 인식하지 못했습니다. ~/.codex/auth.json 내용 또는 API 키를 넣어주세요.'
   );
 }
@@ -192,7 +202,7 @@ function tryJson(text: string): any {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error('JSON 형식이 올바르지 않습니다. 파일 내용을 전부 복사했는지 확인해주세요.');
+    refuse('JSON 형식이 올바르지 않습니다. 파일 내용을 전부 복사했는지 확인해주세요.');
   }
 }
 

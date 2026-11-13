@@ -114,7 +114,7 @@ if (process.argv[2] !== '--child') {
     for (const [header,expected] of [[undefined,401],['Bearer invalid',403]]) { const f=fixture(); const r=await f.request(header,body); ok(r.statusCode===expected && f.counts.parse===0,'authentication'); }
     {const f=fixture(); await drain(f.manager.stopAndDrain()); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.statusCode===503 && r.fields['cache-control']===undefined && f.counts.parse===0 && f.counts.db===0 && f.counts.encrypt===0,'post stop rejection');}
     {const f=fixture(undefined,'field'); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.statusCode===500 && r.body?.error?.message==='Failed to process admin account request' && !r.destroyed && f.counts.sql===1 && !!f.row,'account field failure');}
-    {const f=fixture(); const r=await f.request(`Bearer ${ADMIN}`,{...body,credentials:'not valid'}); ok(r.statusCode===400 && r.fields['cache-control']==='no-store' && r.body.error.message==='Could not import credentials' && f.counts.db===0,'parser rejection');}
+    {const f=fixture(); const r=await f.request(`Bearer ${ADMIN}`,{...body,credentials:'not valid'}); ok(r.statusCode===400 && r.fields['cache-control']==='no-store' && JSON.stringify(r.body)===JSON.stringify({error:{code:'credential_format_unrecognized',message:'Credential format not recognized for this provider.'}}) && f.counts.db===0,'parser rejection');} // The parser's own refusal now names its reason with a fixed code and text (was the generic message).
     {const f=fixture(undefined,'db'); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.statusCode===400 && r.body.error.message==='Could not import credentials','database rejection');}
     {const f=fixture(); const r=await f.request(`Bearer ${ADMIN}`,{...body,credentials:''}); ok(r.statusCode===400 && r.body.error.message==='Invalid account parameters or credentials' && f.counts.parse===0,'validation rejection');}
     const revoked=Proxy.revocable({},{}); revoked.revoke();
@@ -123,6 +123,19 @@ if (process.argv[2] !== '--child') {
       for (const failure of ['parse','db','encrypt','sql']) { const f=fixture(undefined,failure,[signal]); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.statusCode===400 && r.body.error.message==='Could not import credentials' && f.manager.active===0,'untrusted dependency failure'); }
       for (const failure of ['status','json',['json','destroy']]) { const f=fixture(undefined,failure,[signal]); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.destroyed===true && r.statuses.length===1 && r.statuses[0]===201 && f.manager.active===0 && !r.dispatchFailed,'response failure'); }
     }
+    // Refusal reasons: only the parser's tagged refusal (parse stage) and the name's UNIQUE violation (store stage) change the answer.
+    // A thrown value that merely resembles one, or carries it at the other stage, keeps the generic answer.
+    const nameTaken = () => Object.assign(Error('UNIQUE constraint failed: upstream_accounts.name'), {code:'SQLITE_CONSTRAINT_UNIQUE'});
+    {const f=fixture(undefined,'sql',[nameTaken()]); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.statusCode===409 && r.fields['cache-control']==='no-store' && JSON.stringify(r.body)===JSON.stringify({error:{code:'account_name_taken',message:'An account with this name already exists. Choose another name.'}}) && f.manager.active===0,'database rejection');}
+    for (const [failure, signal] of [
+      ['parse', nameTaken()], ['parse', Object.assign(Error(FAULT), {importCode:'account_name_taken'})], ['parse', Object.assign(Error(FAULT), {importCode:'unlisted_code'})],
+      ['parse', Object.assign(Error(FAULT), {importCode:{toString(){ return 'admin_key_not_supported'; }}})], ['parse', {get importCode(){ throw Error(FAULT); }}],
+      ['sql', Object.assign(Error(FAULT), {importCode:'admin_key_not_supported'})], ['sql', Object.assign(Error('UNIQUE constraint failed: upstream_accounts.id'), {code:'SQLITE_CONSTRAINT_UNIQUE'})],
+      ['sql', Object.assign(Error('UNIQUE constraint failed: upstream_accounts.name'), {code:'SQLITE_CONSTRAINT_TRIGGER'})], ['sql', {code:'SQLITE_CONSTRAINT_UNIQUE', get message(){ throw Error(FAULT); }}],
+    ]) { const f=fixture(undefined,failure,[signal]); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.statusCode===400 && JSON.stringify(r.body)===JSON.stringify({error:{message:'Could not import credentials'}}) && f.manager.active===0,'untrusted dependency failure'); }
+    // A refusal is the handler's own response: if writing it fails, the socket is destroyed and no second (500) response is attempted.
+    {const f=fixture(undefined,['sql','status'],[nameTaken()]); const r=await f.request(`Bearer ${ADMIN}`,body); ok(r.destroyed===true && r.statuses.length===1 && r.statuses[0]===409 && f.manager.active===0 && !r.dispatchFailed,'response failure');}
+    {const f=fixture(undefined,'status'); const r=await f.request(`Bearer ${ADMIN}`,{...body,credentials:'not valid'}); ok(r.destroyed===true && r.statuses.length===1 && r.statuses[0]===400 && f.counts.db===0 && f.manager.active===0 && !r.dispatchFailed,'response failure');}
     ok(captures.some(entry => entry.source==='response' && entry.method==='201') && captures.some(entry => entry.source==='response' && entry.method==='400') && captures.some(entry => entry.source==='response' && entry.method==='500'), 'response capture coverage');
     ok(captures.some(entry => entry.source==='logger' && entry.method==='debug' && entry.text===inspect(['Admin authenticated'], {depth:null,maxStringLength:null,maxArrayLength:null,breakLength:Infinity,getters:false})), 'authentication logger coverage');
     ok(captures.every(entry => markers.every(marker => !containsMarker(entry.text,marker))), 'logs contain secret');

@@ -10,7 +10,7 @@ import { AccountRepository } from '../db/repositories/accounts.js';
 import { UsageLogRepository } from '../db/repositories/usage-logs.js';
 import { generateApiKey, hashApiKey } from '../utils/encryption.js';
 import { logger } from '../utils/logger.js';
-import { startLogin, finishLogin, getFlow, setOnLoginComplete, parseImportedCredential, type OAuthProvider } from '../upstream/oauth.js';
+import { startLogin, finishLogin, getFlow, setOnLoginComplete, parseImportedCredential, type OAuthProvider, type ImportRefusalCode } from '../upstream/oauth.js';
 
 import { SettingsRepository, STRATEGIES } from '../db/repositories/settings.js';
 import { createSiwcRouter } from '../upstream/siwc-login.js';
@@ -41,6 +41,30 @@ function onboardingParams(body: any) {
       (body.dailyQuota !== undefined && (!Number.isSafeInteger(body.dailyQuota) || body.dailyQuota < 0)) ||
       !validRoutingValues(body.priority, body.weight)) return null;
   return { name: body.name.trim(), provider: body.provider as OAuthProvider, dailyQuota: body.dailyQuota, priority: body.priority, weight: body.weight };
+}
+
+// Import refusals an administrator may see. Codes and texts are fixed here; nothing is copied from the
+// thrown value, which may quote the submitted credential or be any object a dependency threw.
+type ImportRefusal = { code: string; status: number; message: string };
+// One entry per parser refusal code: a code added in oauth.ts without a text here does not compile.
+const PARSE_REFUSALS = {
+  credential_format_unrecognized: { status: 400, message: 'Credential format not recognized for this provider.' },
+  admin_key_not_supported: { status: 400, message: 'Admin API keys cannot run inference. Use a regular API key.' },
+  credential_provider_mismatch: { status: 400, message: 'This is a Claude key. It cannot be imported as an OpenAI account.' },
+} satisfies Record<ImportRefusalCode, { status: number; message: string }>;
+const NAME_TAKEN: ImportRefusal = { code: 'account_name_taken', status: 409, message: 'An account with this name already exists. Choose another name.' };
+const ACCOUNT_NAME_UNIQUE = 'UNIQUE constraint failed: upstream_accounts.name';
+/** Each stage recognizes only its own refusal: the parser's tag while parsing, the name's UNIQUE violation while storing. */
+function importRefusal(stage: 'parse' | 'store', error: unknown): ImportRefusal | null {
+  try {
+    const e = error as any;
+    if (stage === 'parse') {
+      const code = e?.importCode;
+      return typeof code === 'string' && Object.hasOwn(PARSE_REFUSALS, code) ? { code, ...PARSE_REFUSALS[code as ImportRefusalCode] } : null;
+    }
+    // The UNIQUE constraint decides, not a lookup beforehand, so a concurrent import cannot slip between check and insert.
+    return e?.code === 'SQLITE_CONSTRAINT_UNIQUE' && e.message === ACCOUNT_NAME_UNIQUE ? NAME_TAKEN : null;
+  } catch { return null; }
 }
 
 router.post('/accounts/oauth/start', authenticateAdmin, async (req, res) => {
@@ -74,11 +98,15 @@ router.post('/accounts/import', authenticateAdmin, (req, res) => ownedSyncUserRo
     return res.status(400).json({ error: { message: 'Invalid account parameters or credentials' } });
   }
   let account;
+  let stage: 'parse' | 'store' = 'parse';
   try {
     const parsed = parseImportedCredential(params.provider, req.body.credentials);
+    stage = 'store';
     account = accountRepo.create({ ...params, ...parsed });
-  } catch {
+  } catch (error) {
+    const refusal = importRefusal(stage, error);
     responding();
+    if (refusal) return res.status(refusal.status).json({ error: { code: refusal.code, message: refusal.message } });
     return res.status(400).json({ error: { message: 'Could not import credentials' } });
   }
   const payload = { account: { id: account.id, name: account.name, provider: account.provider, credentialType: account.credentialType, status: account.status } };
