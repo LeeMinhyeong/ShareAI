@@ -24,6 +24,10 @@ function usageAccumulator() {
 }
 export class UpstreamError extends Error {
   headers?: Record<string, string>;
+  /** Server-log diagnosis only: non-secret shape of a provider response the passthrough refused to relay. */
+  upstreamShape?: { status: number; contentType: string | null; contentEncoding: string | null; contentLength: string | null; hasBody: boolean };
+  /** Server-log diagnosis only: where a relayed provider stream stopped being valid. Fixed labels and counts, never content. */
+  streamDiag?: { rule: string; bytes: number; frames: number; lead: string };
   constructor(public status: number, message: string, headers?: Record<string, string>) { super(message); this.headers = headers; }
 }
 

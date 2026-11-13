@@ -302,7 +302,7 @@ multi-account-router/
 ### Phase 5. 클라이언트 호환
 
 **목표:** Claude Code·Codex의 요청/응답, 스트리밍, thinking, tool call을 지원합니다.  
-**현재 상태:** 구현·리뷰 완료, **실제 클라이언트·실제 계정 확인 전**. 범위와 완료 조건은 [ADR 0019](docs/adr/0019-phase5-client-compatibility-scope.md)에 고정했습니다(2026-11-10 사용자 승인). 모든 확인은 합성 공급자로만 했습니다.
+**현재 상태:** 구현·리뷰 완료, **실제 클라이언트·실제 계정 4조합 확인 완료(2026-11-13, 사용자 실행)**. 범위와 완료 조건은 [ADR 0019](docs/adr/0019-phase5-client-compatibility-scope.md)에 고정했습니다(2026-11-10 사용자 승인). 실제 확인의 결과와 한계는 [확인 체크리스트](docs/phase5-real-verification.md) 5번 표에 있습니다. Claude API 키 조합은 비대화형(`claude -p`)으로만 확인했습니다.
 
 - [x] 공통 dispatch 파이프라인 분리(기존 `/v1/chat/completions` 새 실패 0, run18)
 - [x] `/v1/messages`: Anthropic API 키·구독 OAuth, 원문 전달(스트림·비스트림, 도구, thinking, `system`·`cache_control`, 베타 헤더). 합성 공급자 테스트만 함
@@ -310,15 +310,15 @@ multi-account-router/
 - [x] Phase 4 안전 속성 승계(인증·한도·ACL·OPEN·429/5xx 제한·Esc 전환·시간 제한·401 갱신·종료 drain·사용량)
 - [x] 프로토콜별 엄격한 종료 판정, 공급자 오류·헤더 전달(사용자 결정 3B·4B. 헤더는 리뷰에 따라 허용 목록 방식)
 - [x] README 클라이언트 설정 안내
-- [ ] 실제 클라이언트×실제 계정 4조합 확인(사용자 실행) — 절차: [docs/phase5-real-verification.md](docs/phase5-real-verification.md), 도구: `scripts/phase5-verify.mjs`
+- [x] 실제 클라이언트×실제 계정 4조합 확인(사용자 실행, 2026-11-13). 확인 중 고친 것: Claude 개인 API 키(`sk-ant-usr-`) 지원, Codex 구독 백엔드의 `Content-Type` 없는 스트림 수용 — 절차: [docs/phase5-real-verification.md](docs/phase5-real-verification.md), 도구: `scripts/phase5-verify.mjs`
 - [x] 독립 리뷰·재리뷰 PASS(deleg_aec37528 → b02008e9 → 5fe04403), 격리 전체 테스트 246/267(새 실패 0, 보류 21)
 - **완료 후 추가 개발:** 교차 공급자 변환(Claude Code→OpenAI 계정, Codex→Anthropic 계정)
 
-#### 클라이언트 연결 방법 (Phase 5, 실제 계정 확인 전)
+#### 클라이언트 연결 방법 (Phase 5)
 
 ShareAI 관리자 화면이나 Admin API로 만든 **ShareAI 사용자 키**를 클라이언트의 자격증명으로 씁니다. 공급자 계정(구독·API 키)은 서버에만 있고 클라이언트로 전달되지 않습니다.
 
-**Claude Code** — Anthropic 계정(구독 OAuth 또는 `sk-ant-api` 키)으로 라우팅됩니다.
+**Claude Code** — Anthropic 계정(구독 OAuth 또는 API 키)으로 라우팅됩니다.
 
 ```bash
 export ANTHROPIC_BASE_URL=http://<ShareAI 호스트>:20100   # /v1 은 붙이지 않음

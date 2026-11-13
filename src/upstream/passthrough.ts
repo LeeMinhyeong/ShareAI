@@ -286,6 +286,16 @@ async function readBounded(body: ReadableStream<Uint8Array> | null, signal: Abor
   }
 }
 
+/**
+ * What kind of response the router refused to relay, for the server log only (never sent to the client):
+ * status, content type, encoding and length headers (bounded, limited to header-token characters) and whether a body existed.
+ */
+function responseShape(response: Response): NonNullable<UpstreamError['upstreamShape']> {
+  const clean = (value: string | null) => value === null ? null : value.slice(0, 80).replace(/[^A-Za-z0-9/+.;=_ -]/g, '?');
+  // `hasBody` is false only for body-less statuses; `contentLength` (when sent) tells an empty body apart.
+  return { status: response.status, contentType: clean(response.headers.get('content-type')), contentEncoding: clean(response.headers.get('content-encoding')), contentLength: clean(response.headers.get('content-length')), hasBody: !!response.body };
+}
+
 export type PassthroughResult =
   | { kind: 'stream'; status: number; headers: Record<string, string>; frames: AsyncGenerator<RelayFrame> }
   | { kind: 'json'; status: number; headers: Record<string, string>; body: Buffer; usage?: TokenUsage };
@@ -314,16 +324,27 @@ export async function startPassthrough(parsed: ParsedPassthrough, auth: Pick<Res
     catch { throw new UpstreamError(response.status, `Upstream returned HTTP ${response.status}`, rawHeaders); }
     throw new PassthroughHttpError(response.status, rawHeaders, forwardHeaders, errorBody);
   }
-  const type = response.headers.get('content-type')?.toLowerCase() ?? '';
+  const contentType = response.headers.get('content-type');
+  const type = contentType?.toLowerCase() ?? '';
   if (response.body && type.includes('text/event-stream')) {
     return { kind: 'stream', status: response.status, headers: forwardHeaders, frames: relayFrames(response.body, parsed.protocol, signal) };
+  }
+  // The ChatGPT Codex backend answers a streaming request with 200 and no Content-Type header at all
+  // (observed with a real subscription account, 2026-11-13). Only that exact case is read as an event
+  // stream: status 200, the header absent (not another type), the client asked for a stream, and the
+  // request went to the Codex backend. relayFrames still validates every frame: bytes that fail
+  // validation are never relayed, the client stream ends with an error event and the attempt stays
+  // uncertain (the server log names the failed rule). The client gets the content type the provider left out.
+  if (response.body && response.status === 200 && contentType === null && parsed.stream && url === CODEX_RESPONSES_URL) {
+    return { kind: 'stream', status: response.status, headers: { ...forwardHeaders, 'content-type': 'text/event-stream' }, frames: relayFrames(response.body, parsed.protocol, signal) };
   }
   if (response.body && type.includes('application/json')) {
     const json = await readBounded(response.body, signal, MAX_JSON_BODY);
     return { kind: 'json', status: response.status, headers: forwardHeaders, body: json, usage: jsonTerminal(parsed.protocol, json) };
   }
+  const upstreamShape = responseShape(response);
   try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
-  throw new UpstreamError(502, 'Upstream returned an unsupported content type');
+  throw Object.assign(new UpstreamError(502, 'Upstream returned an unsupported content type'), { upstreamShape });
 }
 
 const safeCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
@@ -374,19 +395,30 @@ export async function* relayFrames(body: ReadableStream<Uint8Array>, protocol: P
   let buffer = '', terminal = false;
   let started = false, delta = false;
   let input: unknown[] = [undefined], output: unknown;
-  const fail = (message = 'Malformed or incomplete upstream stream'): never => { throw new UpstreamError(502, message); };
+  // Diagnosis for the server log: which rule failed, how many bytes and complete frames had arrived, and what
+  // the body started with (a fixed label). The client message stays generic and no content is recorded.
+  let bytes = 0, frames = 0, lead: 'field' | 'json' | 'markup' | 'other' | undefined;
+  const fail = (rule: string, message = 'Malformed or incomplete upstream stream'): never => {
+    throw Object.assign(new UpstreamError(502, message), { streamDiag: { rule, bytes, frames, lead: lead ?? (bytes ? 'undecodable' : 'empty') } });
+  };
   try {
     while (true) {
       const { value, done } = await readAbortable(reader, signal);
-      try { buffer += decoder.decode(value, { stream: !done }); } catch { fail(); }
+      bytes += value?.byteLength ?? 0;
+      try { buffer += decoder.decode(value, { stream: !done }); } catch { fail('utf8'); }
+      if (lead === undefined) {
+        const first = buffer.trimStart()[0];
+        if (first !== undefined) lead = first === '<' ? 'markup' : first === '{' || first === '[' ? 'json' : /[a-z:]/.test(first) ? 'field' : 'other';
+      }
       let match: RegExpExecArray | null;
       while ((match = /\r?\n\r?\n/.exec(buffer))) {
         const raw = buffer.slice(0, match.index + match[0].length);
         const frame = buffer.slice(0, match.index);
         buffer = buffer.slice(raw.length);
+        frames++;
         const lines = frame.split(/\r?\n/);
         if (lines.every(line => !line || line.startsWith(':'))) { yield { raw }; continue; }
-        if (terminal) fail('Event after upstream terminal');
+        if (terminal) fail('after_terminal', 'Event after upstream terminal');
         let eventName: string | undefined; const data: string[] = [];
         for (const line of lines) {
           if (line.startsWith(':')) continue;
@@ -396,35 +428,35 @@ export async function* relayFrames(body: ReadableStream<Uint8Array>, protocol: P
           else if (field === 'event') eventName = v;
           // Unknown fields are ignored, as the SSE specification requires.
         }
-        if (!data.length) fail();
+        if (!data.length) fail('no_data');
         let e: any;
-        try { e = JSON.parse(data.join('\n')); } catch { fail(); }
-        if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.type !== 'string') fail();
-        if (eventName !== undefined && eventName !== e.type) fail();
+        try { e = JSON.parse(data.join('\n')); } catch { fail('json'); }
+        if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.type !== 'string') fail('type');
+        if (eventName !== undefined && eventName !== e.type) fail('event_name');
         if (protocol === 'anthropic-messages') {
           switch (e.type) {
-            case 'message_start': if (started || !e.message || typeof e.message !== 'object') fail(); started = true; input = anthropicInput(e.message.usage); break;
-            case 'message_delta': if (!started) fail(); delta = true; if (e.usage && 'output_tokens' in e.usage) output = e.usage.output_tokens; break;
+            case 'message_start': if (started || !e.message || typeof e.message !== 'object') fail('order'); started = true; input = anthropicInput(e.message.usage); break;
+            case 'message_delta': if (!started) fail('order'); delta = true; if (e.usage && 'output_tokens' in e.usage) output = e.usage.output_tokens; break;
             case 'message_stop':
-              if (!started || !delta) fail();
+              if (!started || !delta) fail('order');
               terminal = true; yield { raw, terminal: true, usage: usageOf(input, output) }; continue;
             case 'error': {
               const type = e.error && typeof e.error === 'object' && typeof e.error.type === 'string' && typeof e.error.message === 'string' ? e.error.type : undefined;
-              if (!type) fail();
+              if (!type) fail('shape');
               throw new PassthroughStreamFailure(anthropicErrorStatus[type!] ?? 500, raw);
             }
             default: break;
           }
         } else {
           switch (e.type) {
-            case 'response.created': if (started) fail(); started = true; break;
+            case 'response.created': if (started) fail('order'); started = true; break;
             case 'response.completed': case 'response.incomplete': {
-              if (!e.response || typeof e.response !== 'object') fail();
+              if (!e.response || typeof e.response !== 'object') fail('shape');
               const u = e.response.usage;
               terminal = true; yield { raw, terminal: true, usage: usageOf([u?.input_tokens], u?.output_tokens) }; continue;
             }
             case 'response.failed': {
-              if (!e.response || typeof e.response !== 'object' || e.response.status !== 'failed') fail();
+              if (!e.response || typeof e.response !== 'object' || e.response.status !== 'failed') fail('shape');
               throw new PassthroughStreamFailure(responsesFailureStatus(e.response.error?.code), raw);
             }
             case 'error':
@@ -434,10 +466,10 @@ export async function* relayFrames(body: ReadableStream<Uint8Array>, protocol: P
         }
         yield { raw };
       }
-      if (buffer.length > MAX_FRAME) fail('Upstream event too large');
+      if (buffer.length > MAX_FRAME) fail('too_large', 'Upstream event too large');
       if (done) break;
     }
-    if (!terminal || buffer.trim()) fail();
+    if (!terminal || buffer.trim()) fail(terminal ? 'trailing' : 'no_terminal');
   } finally {
     try { void reader.cancel().catch(() => {}); } catch { /* best effort */ }
     reader.releaseLock();

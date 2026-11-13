@@ -14,6 +14,10 @@
   - Codex 구독: `login openai`(별도 세션).
 - **Esc 뒤 60초 제한:** Esc로 끊으면 그 계정은 60초 동안 쓰이지 않는다(ADR 0008). 활성 계정이 하나뿐이면 60초 안의 다음 요청은 503(적격 계정 없음)이 정상이다.
 - **약관 위험:** 구독 계정을 게이트웨이로 쓰는 것은 공식 문서에 없는 사용법이고, 공급자가 거부하거나 계정을 제한할 수 있다(ADR 0001·0019).
+- **요금제에 딸린 월간 API 크레딧은 대화형 Claude Code에 적용되지 않는다.** Console에 "프로모션 크레딧"으로 보이는 이 크레딧은 Claude API, Agent SDK, Playground, 관리형 에이전트에 적용된다([공식 문서](https://platform.claude.com/docs/en/about-claude/api-credits-for-subscribers)).
+  - ShareAI는 Claude Code의 요청을 헤더까지 그대로 전달한다. 구매 크레딧이 없는 조직의 API 키 계정으로 대화형 Claude Code 요청을 보내면 공급자가 "credit balance is too low" 400으로 거절하고, ShareAI는 그 계정을 `error`로 바꾼다(ADR 0020). 2026-11-13에 Haiku 5.5와 Opus 5.5 모두 이렇게 거절됐다.
+  - 비대화형 `claude -p`는 같은 키로 ShareAI를 거쳐도 적용된다(2026-11-13 확인). 그래서 Claude API 키 조합은 4번 끝의 `claude -p` 절차로 확인한다. 대화형으로 확인하려면 구매 크레딧이 필요하다.
+  - 키는 워크스페이스를 지정해서 만든다. 범위를 "조직"으로 만든 키는 워크스페이스 미지정 키라서 ShareAI로는 쓸 수 없다.
 
 ## 1. 서버 준비 (창 A)
 
@@ -119,14 +123,30 @@ codex --profile shareai
 
 **실패로 볼 것:** 응답이 중간에 끊김 / "The response above may be incomplete" / 400·401 반복 / 시험 후 `status`에 `open`이 계속 남음 / 서버 창에 예외 스택.
 
+**Claude API 키 조합은 `claude -p`로 확인한다** (월간 API 크레딧만 있는 경우, 0번 참고). 창 C에서 프로젝트 폴더로 옮겨 한 줄씩 실행한다.
+
+```powershell
+cd C:\Users\Administrator\Desktop\Workspace\개발\라우터
+claude -p "한 문장으로 자기소개" --model claude-haiku-5-5                       # T1
+claude -p "README.md 첫 줄 읽어줘" --model claude-haiku-5-5                     # T2
+claude -p "단계별로 생각해서 17×23 검산" --model claude-haiku-5-5                 # T3
+claude -p -c "방금 답을 한 줄로 요약해줘" --model claude-haiku-5-5                 # T3 다음 턴
+claude -p "1부터 300까지 각 숫자에 대해 한 줄씩 설명해줘" --model claude-haiku-5-5   # T4: 5~10초 뒤 Ctrl+C
+claude -p "안녕" --model claude-haiku-5-5                                       # T5: 60초 뒤
+```
+
+- `-p`는 답을 끝에 한꺼번에 출력하므로 T4에서는 화면에 아무것도 보이지 않는다. 기다렸다가 Ctrl+C를 누르고 `status`에서 `restricted`를 확인한다. Ctrl+C는 ShareAI 쪽에서 Esc와 같은 연결 끊김으로 처리된다(2026-11-13 확인).
+- `claude.ai connectors are disabled ...` 경고는 `ANTHROPIC_AUTH_TOKEN`을 쓰고 있다는 안내이고 정상이다.
+- 요청 하나에 입력이 약 4만 4천 토큰 나간다(Claude Code의 시스템 프롬프트와 도구 정의).
+
 ## 5. 결과 기록 (이 표를 채워서 공유)
 
 | 조합 | T1 | T2 | T3 | T4 | T5 | 오류 문구·관찰 |
 |---|---|---|---|---|---|---|
-| Claude Code × Claude 구독 | | | | | | |
-| Claude Code × Claude API | | | | | | |
-| Codex × Codex 구독 | | | | | | |
-| Codex × OpenAI API | | | | | | |
+| Claude Code × Claude 구독 | ○ | ○ | ○ | ○ | ○ | 2026-11-13, 대화형, `setup-token` 계정. 사용자 보고로 전 항목 통과. 사용 기록: 요청 13건 중 성공 11건, 중단 2건(14:16, 14:31), 14:16 중단 73초 뒤 정상 응답, 미결 시도 없음 |
+| Claude Code × Claude API | ○ | ○ | ○ | ○ | ○ | 2026-11-13, `claude -p`(비대화형)와 `sk-ant-usr-` 키로 확인. 대화형은 크레딧 미적용으로 400(0번). T2는 요청 2건(도구 호출, 최종 답) 성공. T3은 요청 성공만 확인했고 thinking 사용 여부는 미확인. T4는 Ctrl+C 뒤 `restricted`, 미결 시도 없음. T5는 60초 뒤 `no_known_block`과 정상 응답 확인, "직후 503"은 미관찰 |
+| Codex × Codex 구독 | ○ | ○ | ○ | ○ | ○ | 2026-11-13, Codex CLI 0.167.2, `gpt-6.1-terra`. 사용자 보고로 전 항목 통과. 처음 두 번은 502로 실패했고(공급자가 `Content-Type` 없이 스트림을 보냄, ADR 0019 7번) 수정 뒤 새 계정으로 통과. 사용 기록: 요청 10건 중 성공 9건, 중단 1건, 117초 뒤 정상 응답. 실패한 두 계정(`codex-sub`, `codex-sub2`)은 `open`으로 남음 |
+| Codex × OpenAI API | ○ | ○ | ○ | ○ | ○ | 2026-11-13, Codex CLI 0.167.2, `gpt-6.1-terra`. 사용자 보고로 전 항목 통과. 사용 기록: 요청 9건 중 성공 8건, 중단 1건, 그 뒤 정상 응답, 미결 시도 없음 |
 
 실패가 있으면 다음도 함께 보낸다.
 - 해당 시점의 `status` 출력
@@ -138,9 +158,15 @@ codex --profile shareai
 - 검증 DB `data/phase5-verify.db`에는 실제 자격증명이 암호화되어 저장돼 있다. 더 쓰지 않으려면 서버를 끄고 `data/phase5-verify.db*` 파일을 지운다.
 - `login`으로 만든 구독 세션은 공급자 쪽 계정 설정에서 로그아웃하거나 폐기할 수 있다.
 
-## 미확인 가정 (이 확인으로 판정할 것)
+## 이 확인으로 판정한 가정 (2026-11-13)
 
-- Claude 구독 토큰(setup-token·OAuth)이 Claude Code 원문 요청에 OAuth 베타 병합만으로 응답하는지
-- Codex 구독 백엔드(`chatgpt.com/backend-api/codex/responses`)가 Codex CLI 원문 본문을 받아들이는지(`store:false` 등)
-- Codex CLI가 사용자 정의 공급자에 대해 `/v1/models` 같은 다른 엔드포인트를 요구하는지
-- 실제 thinking 무음 시간이 무응답 제한 300초 안에 드는지
+- Claude 구독 토큰(`setup-token`)은 Claude Code 원문 요청에 OAuth 베타 병합만으로 응답한다. **확인.** `login anthropic`으로 만든 OAuth 계정은 시험하지 않았다.
+- Codex 구독 백엔드는 Codex CLI 원문 본문을 받아들인다. **확인.** 다만 응답에 `Content-Type`이 없어서 라우터를 고쳐야 했다(ADR 0019 7번).
+- Codex CLI는 ShareAI의 `/v1/responses`만으로 동작했다. 모델 목록은 `chatgpt.com`에 직접 요청했다(Codex 로그 기준).
+- 실제 thinking 무음 시간이 무응답 제한 300초 안에 드는지는 **판정하지 못했다.** 짧은 질문만 시험했다.
+
+남은 한계
+
+- Claude API 키 조합은 비대화형(`claude -p`)으로만 확인했다.
+- 각 조합의 T3에서 모델이 실제로 thinking·reasoning을 썼는지는 사용 기록으로 확인할 수 없다.
+- 계정 하나로 요청 하나만 처리하는 제한과 Codex의 동시 요청이 부딪혀 재시도가 보였는지는 기록하지 않았다.

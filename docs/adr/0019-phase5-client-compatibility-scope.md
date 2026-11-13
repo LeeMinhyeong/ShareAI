@@ -1,6 +1,6 @@
 # ADR 0019: Phase 5 클라이언트 호환 범위 고정
 
-- 상태: **사용자 승인 (2026-11-10, 1A·2A·3B·4B).** 방향 결정이며 아직 구현·검증되지 않았다. 교차 변환(1B)은 Phase 5 완료 후 추가 개발로 진행한다.
+- 상태: **사용자 승인 (2026-11-10, 1A·2A·3B·4B). 구현·리뷰 완료, 실제 클라이언트·실제 계정 4조합 확인 완료 (2026-11-13, 사용자 실행).** 결과와 한계는 [확인 체크리스트](../phase5-real-verification.md) 5번 표에 있다. 교차 변환(1B)은 Phase 5 완료 후 추가 개발로 진행한다.
 - 관련: [ADR 0005](0005-retry-failover-policy.md), [ADR 0008](0008-new-request-account-429-policy.md), [ADR 0010](0010-v1-authentication-scope-boundary.md), [ADR 0016](0016-phase4-scope-freeze.md), [ADR 0017](0017-best-effort-stream-disposal.md)
 
 ## 배경
@@ -99,6 +99,20 @@ Phase 5의 목표는 Claude Code와 Codex CLI가 ShareAI를 실제로 쓸 수 �
 - 근거(사용자 설명): API 키 계정 비용은 각 구독 계정에 미리 지급된 API 크레딧에서 나간다. 그 범위 안에서 쓰는 것은 문제가 없다.
 - 사용자 한도는 요청 횟수 기준이다. 요청 하나 안에서 도구를 여러 번 호출해도 1회로 센다. 사용자별 도구 호출 기록과 상한은 필요해지면 다시 검토한다(BACKLOG).
 - 크레딧이 떨어진 계정을 어떻게 처리할지는 BACKLOG에서 다룬다.
+
+### 7. Codex 구독 백엔드의 형식 없는 스트림 (실제 확인에서 발견, 2026-11-13)
+
+- 관찰: 실제 ChatGPT(Codex) 구독 계정으로 `POST /v1/responses`를 보내면, 공급자(`chatgpt.com/backend-api/codex/responses`)가 200으로 답하면서 `Content-Type`, `Content-Encoding`, `Content-Length` 헤더를 하나도 보내지 않았다(계정 2개에서 같은 결과, 서버 로그의 `upstream` 항목으로 확인).
+- 그전 동작: 라우터는 `text/event-stream`이나 `application/json`이 아니면 502(`Upstream returned an unsupported content type`)로 거부했다. 그래서 Codex 구독 계정의 요청이 전부 실패했다.
+- 결정: 아래 조건이 모두 맞을 때만 그 응답을 이벤트 스트림으로 읽는다.
+  - 상태 코드가 200이다.
+  - `Content-Type` 헤더가 아예 없다(빈 값이나 다른 형식은 해당하지 않는다).
+  - 클라이언트가 스트림을 요청했다(`stream: true`).
+  - 요청이 Codex 구독 백엔드로 갔다(OpenAI API 키와 Anthropic은 해당하지 않는다).
+- 프레임 검증은 그대로다. 검증에 실패한 바이트는 전달하지 않는다. 헤더는 첫 프레임을 읽기 전에 나가므로, 본문이 완결된 이벤트 스트림이 아니면 클라이언트는 200과 오류 이벤트를 받고 그 시도는 불확실한 것으로 남는다(수정 전에는 502 JSON이었다). 클라이언트에는 `Content-Type: text/event-stream`을 붙여 보낸다.
+- `Content-Encoding`은 조건에 넣지 않았다. 형식이 적힌 스트림 경로도 검사하지 않고, 압축이 풀리지 않은 본문은 프레임 검증에서 걸린다.
+- 진단: 형식 불일치로 거부할 때는 서버 로그의 `upstream`에 응답의 상태 코드, content-type, content-encoding, content-length, 본문 유무를 남긴다. 스트림 검증이 실패할 때는 `upstreamStream`에 실패한 규칙 이름, 받은 바이트 수, 프레임 수, 본문 첫 글자의 종류(고정 라벨)를 남긴다. 본문·쿠키·자격증명은 남기지 않는다.
+- 확인: 수정 뒤 같은 구독의 새 계정으로 Codex CLI 0.167.2 요청 8건이 연속으로 성공했다(2026-11-13 15:12~15:14, 사용 기록 기준). 형식 없는 본문은 이벤트 스트림이었다.
 
 ## 완료 조건 (고정)
 

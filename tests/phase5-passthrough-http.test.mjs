@@ -437,3 +437,124 @@ test('messages: an escaped duplicate key and a UTF-8 BOM are rejected before dis
   assert.ok(bom.status === 400, `${bom.status} ${bom.text}`);
   assert.equal(calls.length, 0);
 });
+
+test('responses: a 2xx provider response that is neither SSE nor JSON is refused with the fixed 502, and the server log names its shape', async () => {
+  const {logger} = await import('../src/utils/logger.ts');
+  const original = logger.error, logged = [];
+  logger.error = (...args) => { logged.push(args); };
+  try {
+    codexOauth('r-shape');
+    upstream(() => new Response('<html>marker-body-7731</html>', {status:200, headers:{'content-type':'Text/HTML; charset="utf-8"\u00e9' + 'x'.repeat(200), 'content-encoding':'br', 'set-cookie':'marker-cookie-5512=1'}}));
+    const r = await send('/v1/responses', codexBody, codexHeaders);
+    assert.equal(r.status, 502);
+    assert.deepEqual(JSON.parse(r.text), {error:{message:'Upstream returned an unsupported content type', type:'api_error', code:null, param:null}}, 'the client answer is unchanged');
+    const entry = logged.find(args => args[1] === 'Inference request failed');
+    assert.ok(entry, 'the failure is logged once');
+    // Status, a bounded and character-filtered content type, the encoding and whether a body existed: nothing else of the response.
+    assert.deepEqual(entry[0].upstream, {status:200, contentType:('Text/HTML; charset=?utf-8??' + 'x'.repeat(200)).slice(0, 80), contentEncoding:'br', contentLength:null, hasBody:true});
+    const text = JSON.stringify(logged);
+    assert.ok(!text.includes('marker-body-7731') && !text.includes('marker-cookie-5512') && !text.includes('cat-r-shape'), 'no body, cookie or credential in the log');
+    // No content-type header at all, an empty body with a length, and a body-less status.
+    // (The API-key endpoint always sends a content type; without one the response is refused. The Codex backend is the exception below.)
+    for (const [name, response, expected, make = codexOauth] of [
+      ['r-shape-none', () => new Response(new Blob(['x']).stream(), {status:200}), {status:200, contentType:null, contentEncoding:null, contentLength:null, hasBody:true}, openaiKey],
+      ['r-shape-empty', () => new Response('', {status:200, headers:{'content-type':'text/plain', 'content-length':'0'}}), {status:200, contentType:'text/plain', contentEncoding:null, contentLength:'0', hasBody:true}],
+      ['r-shape-204', () => new Response(null, {status:204}), {status:204, contentType:null, contentEncoding:null, contentLength:null, hasBody:false}],
+    ]) {
+      logged.length = 0;
+      make(name);
+      upstream(response);
+      assert.equal((await send('/v1/responses', codexBody, codexHeaders)).status, 502, name);
+      assert.deepEqual(logged.find(args => args[1] === 'Inference request failed')[0].upstream, expected, name);
+    }
+    // Other failures carry no shape.
+    logged.length = 0;
+    codexOauth('r-shape-2');
+    upstream(() => new Response(JSON.stringify({error:{message:'bad', type:'invalid_request_error'}}), {status:400, headers:{'content-type':'application/json'}}));
+    assert.equal((await send('/v1/responses', codexBody, codexHeaders)).status, 400);
+    assert.ok(logged.every(args => !('upstream' in (args[0] ?? {}))));
+  } finally { logger.error = original; }
+});
+
+// Observed with a real ChatGPT (Codex) subscription account on 2026-11-13: the Codex backend answers a
+// streaming request with 200 and no Content-Type, Content-Encoding or Content-Length header.
+const untyped = text => new Response(new Blob([text]).stream(), {status:200, headers:{'x-codex-primary-used-percent':'12'}});
+
+test('responses: the Codex backend stream that carries no Content-Type header is relayed as SSE', async () => {
+  const a = codexOauth('r-untyped');
+  upstream(() => { const response = untyped(codexFrames.join('')); assert.equal(response.headers.get('content-type'), null, 'fixture really has no content type'); return response; });
+  const r = await send('/v1/responses', codexBody, codexHeaders);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/codex/responses');
+  assert.equal(r.text, codexFrames.join(''), 'every frame is relayed unchanged');
+  assert.equal(r.headers['content-type'], 'text/event-stream', 'the client gets a typed SSE response');
+  assert.equal(r.headers['x-codex-primary-used-percent'], '12', 'allowlisted provider headers are still relayed');
+  assert.equal(open(a.id), undefined, 'the attempt is settled');
+  assert.deepEqual(usage(a.id), {input:100, output:20, success:1});
+  // A typed stream from the same backend keeps the provider's own content type.
+  codexOauth('r-typed-charset');
+  upstream(() => sse(codexFrames, {'content-type':'text/event-stream; charset=utf-8'}));
+  assert.equal((await send('/v1/responses', codexBody, codexHeaders)).headers['content-type'], 'text/event-stream; charset=utf-8');
+});
+
+test('responses: an untyped Codex body that is not a complete event stream ends with a router error event, keeps the uncertain OPEN, and the log names the failed rule', async () => {
+  const {logger} = await import('../src/utils/logger.ts');
+  const original = logger.error, logged = [];
+  logger.error = (...args) => { logged.push(args); };
+  try {
+    const three = codexFrames.slice(0, 3).join('');
+    for (const [name, text, diag, relayed] of [
+      ['r-untyped-cut', three, {rule:'no_terminal', frames:3, lead:'field'}, three],
+      ['r-untyped-html', '<html>not a stream marker-7731</html>', {rule:'no_terminal', frames:0, lead:'markup'}, ''],
+      ['r-untyped-json', '{"detail":"not a stream marker-7731"}', {rule:'no_terminal', frames:0, lead:'json'}, ''],
+      ['r-untyped-empty', '', {rule:'no_terminal', frames:0, lead:'empty'}, ''],
+      ['r-untyped-junk', three + 'garbage marker-7731\n\n' + codexFrames.slice(3).join(''), {rule:'no_data', frames:4, lead:'field'}, three],
+    ]) {
+      logged.length = 0;
+      const a = codexOauth(name);
+      upstream(() => untyped(text));
+      const r = await send('/v1/responses', codexBody, codexHeaders);
+      assert.equal(r.status, 200, name);
+      assert.equal(r.headers['content-type'], 'text/event-stream', name);
+      assert.ok(r.text.startsWith(relayed), `${name}: frames that passed validation were relayed`);
+      const tail = r.text.slice(relayed.length);
+      assert.match(tail, /^event: error\ndata: /, `${name}: nothing but the router's error event follows`);
+      assert.equal(tail.split('\n\n').filter(Boolean).length, 1, name);
+      assert.ok(!r.text.includes('marker-7731') && !r.text.includes('response.completed'), `${name}: bytes after the failure are never relayed`);
+      assert.ok(open(a.id), `${name}: uncertain outcome keeps the OPEN (ADR 0008)`);
+      const entry = logged.find(args => args[1] === 'Inference request failed');
+      assert.deepEqual(entry[0].upstreamStream, {...diag, bytes:Buffer.byteLength(text)}, name);
+      assert.ok(!JSON.stringify(logged).includes('marker-7731'), `${name}: no body content in the log`);
+    }
+  } finally { logger.error = original; }
+});
+
+test('responses and messages: a missing Content-Type is accepted only for a streaming request to the Codex backend', async () => {
+  const refused = async (label, path, body, headers) => {
+    upstream(() => untyped(path === '/v1/messages' ? claudeFrames.join('') : codexFrames.join('')));
+    const r = await send(path, body, headers);
+    assert.equal(r.status, 502, label);
+    assert.equal(JSON.parse(r.text).error.message, 'Upstream returned an unsupported content type', label);
+  };
+  openaiKey('r-untyped-key');
+  await refused('OpenAI API key (api.openai.com)', '/v1/responses', codexBody, codexHeaders);
+  assert.equal(calls[0].url, 'https://api.openai.com/v1/responses');
+  codexOauth('r-untyped-nostream');
+  await refused('Codex backend, non-stream request', '/v1/responses', codexBody.replace('"stream":true', '"stream":false'), codexHeaders);
+  codexOauth('r-untyped-nofield');
+  await refused('Codex backend, request without a stream field', '/v1/responses', codexBody.replace('"stream":true,', ''), codexHeaders);
+  codexOauth('r-untyped-206');
+  upstream(() => new Response(new Blob([codexFrames.join('')]).stream(), {status:206}));
+  assert.equal((await send('/v1/responses', codexBody, codexHeaders)).status, 502, 'only status 200 was observed');
+  anthropicOauth('m-untyped');
+  await refused('Anthropic subscription', '/v1/messages', claudeBody, claudeHeaders);
+  anthropicKey('m-untyped-key');
+  await refused('Anthropic API key', '/v1/messages', claudeBody, claudeHeaders);
+  // Another content type is not "missing": still refused on the Codex backend.
+  codexOauth('r-typed-other');
+  upstream(() => new Response(codexFrames.join(''), {status:200, headers:{'content-type':'text/plain'}}));
+  assert.equal((await send('/v1/responses', codexBody, codexHeaders)).status, 502);
+  upstream(() => new Response(new Blob([codexFrames.join('')]).stream(), {status:200, headers:{'content-type':''}}));
+  codexOauth('r-typed-empty');
+  assert.equal((await send('/v1/responses', codexBody, codexHeaders)).status, 502, 'an empty Content-Type value is not a missing header');
+});

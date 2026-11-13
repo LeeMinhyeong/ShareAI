@@ -255,5 +255,8 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
   - `POST /admin/accounts`: 이름이 중복되면 500 `Failed to process admin account request`가 나온다.
 - 가져오기 형식 오류는 사유 코드가 하나(`credential_format_unrecognized`)다. JSON이 중간에 잘린 경우("파일 내용을 전부 복사했는지")처럼 파서가 구분하던 세부 사유는 응답에 나오지 않는다. 다시 헷갈리면 코드를 나눈다.
 - 가져오기 사유 판정은 저장 단계 전체(DB 연결, 암호화, INSERT)를 한 단계로 본다. SQLite의 `UNIQUE constraint failed: upstream_accounts.name` 오류만 이름 중복으로 보고, 그 밖의 저장 실패는 계속 `Could not import credentials`(400)로 나간다. 서버 쪽 실패인데 400인 점은 그대로다.
+- (실제 확인 2026-11-13) `/v1/chat/completions` 경로(`inference.ts`)도 `text/event-stream`이 아니면 502로 거부한다. Codex 구독 백엔드는 `Content-Type` 없이 스트림을 보내므로, 이 경로로 Codex 구독 계정을 쓰면 같은 이유로 실패할 것이다(실제 계정으로는 미확인). `/v1/responses`에만 예외를 넣었다(ADR 0019 7번).
+- (실제 확인 2026-11-13) 공급자가 2xx로 답했는데 라우터가 응답을 읽지 못하면(형식 불일치, 깨진 스트림) 그 시도는 불확실한 것으로 남아 계정이 `open`으로 무기한 묶인다. 풀려면 서버를 끄고 `scripts/offline-open-recovery.mjs`를 써야 한다. 라우터가 스스로 끊은 요청처럼 60초 제한으로 바꿀지는 정책 결정이 필요하다(ADR 0008).
+- (실제 확인 2026-11-13) 계정 하나는 한 번에 요청 하나만 처리한다. Codex CLI는 질문 하나에 요청 두 개를 동시에 보내서(본 대화와 보조 스레드), 켜진 계정이 하나면 두 번째가 503을 받고 재시도한다. 계정당 동시 요청 허용은 Phase 4의 시도 단위 설계를 바꾸는 일이다.
 - "쓸 수 있는 계정 없음" 503은 Claude Code 형식에서 오류 종류가 `overloaded_error`로 나간다(`routerErrorBody`). Claude Code는 이를 일시적 과부하로 보고 10번 재시도한 뒤 "Repeated 529 Overloaded errors"를 보여 준다. 계정이 `error`·`disabled`라서 기다려도 풀리지 않는 경우와 Esc 뒤 60초 제한처럼 곧 풀리는 경우를 구분해서 보낸다. 실제 확인 중 발견(2026-11-13).
 - 접두사 규칙은 `oauth.ts`, `inference.ts`, `passthrough.ts` 세 곳에 같은 정규식으로 적혀 있다. VM 테스트의 의존성 허용 목록 때문에 공유 모듈로 빼지 않았고, 세 곳이 같은지는 테스트가 비교한다.

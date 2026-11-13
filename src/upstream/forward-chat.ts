@@ -540,7 +540,10 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
       try { accountPool.recordSiwcFailure(siwcSelected, siwcDispatchedRevision); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record SIWC failure'); }
     }
-    logger.error({status:logStatus, userId:user.id, ...(timedOut ? {routerTimeout:timedOut} : {})}, 'Inference request failed');
+    // Set only by the passthrough's own "unsupported content type" error: non-secret response shape for diagnosis.
+    const upstreamShape = error instanceof UpstreamError ? error.upstreamShape : undefined;
+    const streamDiag = error instanceof UpstreamError ? error.streamDiag : undefined;
+    logger.error({status:logStatus, userId:user.id, ...(timedOut ? {routerTimeout:timedOut} : {}), ...(upstreamShape ? {upstream:upstreamShape} : {}), ...(streamDiag ? {upstreamStream:streamDiag} : {})}, 'Inference request failed');
     if (!res.headersSent && status === 429 && error instanceof UpstreamError && !(error instanceof PassthroughHttpError) && error.headers?.['retry-after'] !== undefined) {
       const now = Date.now();
       const deadline = ordinary429Deadline(now, error.headers['retry-after'], error.headers.date);
