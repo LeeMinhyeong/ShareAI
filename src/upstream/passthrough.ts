@@ -39,6 +39,32 @@ export class PassthroughStreamFailure extends UpstreamError {
   constructor(status: number, public raw: string) { super(status, 'Upstream reported a stream failure'); }
 }
 
+// Claude API keys all start with `sk-ant-`: personal `sk-ant-usr-`, legacy workspace `sk-ant-api..`,
+// and other identity-backed kinds. `oat`/`ort` are subscription OAuth tokens, `sid` is a claude.ai
+// session cookie and `admin` keys cannot run inference, so those are never treated (or sent) as an
+// API key. The same literal lives in oauth.ts (import), inference.ts and passthrough.ts (dispatch);
+// a test compares the three. No shared import because VM fixtures pin each file's dependencies.
+const ANTHROPIC_API_KEY = /^sk-ant-(?!oat|ort|admin|sid)[A-Za-z0-9_-]+$/;
+/**
+ * ADR 0020 addendum: a Claude API key that is not scoped to a workspace needs an
+ * `anthropic-workspace-id` header on every request, which the router neither forwards from
+ * clients nor stores per account. The provider's documented 400 is recognized so the account
+ * can leave routing instead of failing every request it is given.
+ */
+export function workspaceUnscopedKey(provider: 'anthropic' | 'openai', status: number, raw: Buffer): boolean {
+  if (provider !== 'anthropic' || status !== 400) return false;
+  let value: any;
+  try { value = JSON.parse(raw.toString('utf8')); } catch { return false; }
+  const e = value?.error;
+  return !!e && typeof e === 'object' && e.type === 'invalid_request_error' && e.message === WORKSPACE_UNSCOPED_MESSAGE;
+}
+// Provider wording must equal the whole message. Validation 400s quote client input, and the
+// quoted part can even lead the message (`<unknown field name>: Extra inputs are not permitted`), so
+// a substring or prefix match would let one pooled user's crafted request disable the account for
+// everyone. A reworded provider message is merely missed (old behaviour). The workspace text is from
+// the official authentication docs; the credit text is from user reports, not from the docs.
+const CREDIT_TOO_LOW_MESSAGE = 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.';
+const WORKSPACE_UNSCOPED_MESSAGE = 'This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use. Add the header, or use an API key that is scoped to a workspace.';
 const OPENAI_BILLING_CODES = new Set(['credit_balance_exhausted', 'insufficient_quota', 'organization_spend_limit_exceeded', 'project_spend_limit_exceeded', 'organization_usage_limit_exceeded']);
 /**
  * ADR 0020: recognizes a provider error that retrying cannot fix because the
@@ -56,7 +82,7 @@ export function creditExhaustionCode(provider: 'anthropic' | 'openai', status: n
     const e = value.error;
     if (!e || typeof e !== 'object') return null;
     if ((status === undefined || status === 402) && e.type === 'billing_error') return 'billing_error';
-    if ((status === undefined || status === 400) && e.type === 'invalid_request_error' && typeof e.message === 'string' && /credit balance is too low/i.test(e.message)) return 'credit_balance_too_low';
+    if ((status === undefined || status === 400) && e.type === 'invalid_request_error' && e.message === CREDIT_TOO_LOW_MESSAGE) return 'credit_balance_too_low';
     return null;
   }
   if (status !== undefined && status !== 429) return null;
@@ -211,7 +237,7 @@ export function buildUpstreamRequest(parsed: ParsedPassthrough, auth: Pick<Resol
   if (parsed.protocol === 'anthropic-messages') {
     headers['anthropic-version'] ??= '2023-06-01';
     if (auth.kind === 'api_key') {
-      if (!auth.token.startsWith('sk-ant-api')) throw new UpstreamError(400, 'Unsupported or invalid API key');
+      if (!ANTHROPIC_API_KEY.test(auth.token)) throw new UpstreamError(400, 'Unsupported or invalid API key');
       headers['x-api-key'] = auth.token;
     } else {
       headers.authorization = `Bearer ${auth.token}`;
@@ -221,7 +247,8 @@ export function buildUpstreamRequest(parsed: ParsedPassthrough, auth: Pick<Resol
   }
   headers.authorization = `Bearer ${auth.token}`;
   if (auth.kind === 'api_key') {
-    if (!auth.token.startsWith('sk-')) throw new UpstreamError(400, 'Unsupported or invalid API key');
+    // A Claude key filed under an OpenAI account must never be sent to OpenAI.
+    if (!auth.token.startsWith('sk-') || auth.token.startsWith('sk-ant-')) throw new UpstreamError(400, 'Unsupported or invalid API key');
     return { url: OPENAI_RESPONSES_URL, headers };
   }
   if (!auth.accountId || /[\r\n]/.test(auth.accountId)) throw new UpstreamError(400, 'Codex OAuth requires a ChatGPT account ID');

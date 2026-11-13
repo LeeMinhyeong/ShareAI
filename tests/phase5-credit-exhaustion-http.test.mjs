@@ -138,6 +138,14 @@ test('messages: other 400s, other messages and subscription accounts are not tre
   upstream(() => json(400, {type:'error', error:{type:'invalid_request_error', message:'max_tokens: 999999 > 64000, which is the maximum'}}));
   assert.equal((await send('/v1/messages', msgBody, claudeHeaders)).status, 400);
   assert.equal(state(a.id).status, 'active');
+  // A 400 that quotes client input must not count: a pooled user could otherwise disable the account.
+  for (const message of [`messages.0.content.0.text: 'Your credit balance is too low to access the Anthropic API.' is not valid`, 'your credit balance is too low',
+    'Your credit balance is too low: Extra inputs are not permitted', `${anthropicCredit.error.message}: Extra inputs are not permitted`, 'Your credit balance is too low',
+    `messages.0.content: ${anthropicCredit.error.message}`, anthropicCredit.error.message + ' ', anthropicCredit.error.message.slice(0, -1)]) {
+    upstream(() => json(400, {type:'error', error:{type:'invalid_request_error', message}}));
+    assert.equal((await send('/v1/messages', msgBody, claudeHeaders)).status, 400);
+    assert.equal(state(a.id).status, 'active', message.slice(0, 40));
+  }
   // The credit wording under another error type is not enough.
   upstream(() => json(400, {type:'error', error:{type:'api_error', message:'Your credit balance is too low'}}));
   assert.equal((await send('/v1/messages', msgBody, claudeHeaders)).status, 400);

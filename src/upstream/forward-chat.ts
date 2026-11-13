@@ -7,7 +7,7 @@ import { RefreshIntentError } from '../db/repositories/accounts.js';
 import { logger } from '../utils/logger.js';
 import { resolveAuth } from './tokens.js';
 import { infer, UpstreamError, isSiwcStream429 } from './inference.js';
-import { parsePassthrough, startPassthrough, PassthroughHttpError, PassthroughStreamFailure, creditExhaustionCode, routerErrorBody, routerErrorFrame, type PassthroughProtocol, type ParsedPassthrough, type PassthroughResult } from './passthrough.js';
+import { parsePassthrough, startPassthrough, PassthroughHttpError, PassthroughStreamFailure, creditExhaustionCode, workspaceUnscopedKey, routerErrorBody, routerErrorFrame, type PassthroughProtocol, type ParsedPassthrough, type PassthroughResult } from './passthrough.js';
 import { invokeAccountAttempt, settleAccountAttempt, AccountAttemptOpen, AccountQuotaUnavailable, AccountCooldownBeforeDispatch, type AccountAttempt } from './account-quota.js';
 import { getDb } from '../db/client.js';
 import { withAsyncWriter } from '../db/async-writer.js';
@@ -525,11 +525,17 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     logStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
     // ADR 0020: an API-key account whose prepaid credit is exhausted leaves routing
     // until an administrator re-enables it; the provider error is still forwarded.
-    const creditCode = account && ordinaryDispatched && !controller.signal.aborted && (observedAccount ?? account).credentialType === 'api_key' && (logProvider === 'anthropic' || logProvider === 'openai')
-      ? error instanceof PassthroughHttpError ? creditExhaustionCode(logProvider, error.status, error.body)
-        : error instanceof PassthroughStreamFailure ? creditExhaustionCode(logProvider, undefined, error.raw) : null
+    const apiKeyProvider = account && ordinaryDispatched && !controller.signal.aborted && (observedAccount ?? account).credentialType === 'api_key' && (logProvider === 'anthropic' || logProvider === 'openai') ? logProvider : null;
+    const creditCode = apiKeyProvider
+      ? error instanceof PassthroughHttpError ? creditExhaustionCode(apiKeyProvider, error.status, error.body)
+        : error instanceof PassthroughStreamFailure ? creditExhaustionCode(apiKeyProvider, undefined, error.raw) : null
       : null;
-    const shouldRecordFailure = account && ordinaryDispatched && !controller.signal.aborted && (creditCode || status === 401 || status === 403 || status === 429 || !validErrorStatus || status >= 500) && !(error instanceof RefreshIntentError) && !(error instanceof AccountQuotaUnavailable);
+    // ADR 0020 addendum: the same treatment for a Claude API key that is not scoped to a workspace.
+    // It can never succeed through the router, so it must not keep receiving requests.
+    const accountNotice = creditCode ? `API 크레딧 소진(${creditCode}): 크레딧을 충전한 뒤 계정을 다시 켜세요`
+      : apiKeyProvider && error instanceof PassthroughHttpError && workspaceUnscopedKey(apiKeyProvider, error.status, error.body) ? '워크스페이스 미지정 API 키: 워크스페이스를 지정한 키로 바꾼 뒤 계정을 다시 켜세요'
+      : null;
+    const shouldRecordFailure = account && ordinaryDispatched && !controller.signal.aborted && (accountNotice || status === 401 || status === 403 || status === 429 || !validErrorStatus || status >= 500) && !(error instanceof RefreshIntentError) && !(error instanceof AccountQuotaUnavailable);
     if (siwcSelected && siwcDispatchedRevision !== undefined && !controller.signal.aborted && (!validErrorStatus || status === 429 || status >= 500)) {
       try { accountPool.recordSiwcFailure(siwcSelected, siwcDispatchedRevision); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record SIWC failure'); }
@@ -542,7 +548,7 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     }
     adapter.writeError(res, error, status, controller.signal.aborted);
     if (shouldRecordFailure && account) {
-      try { await accountPool.recordFailureAsync(account.id, creditCode ? {status, message:`API 크레딧 소진(${creditCode}): 크레딧을 충전한 뒤 계정을 다시 켜세요`, creditExhausted:true} : {status, message:`Upstream request failed (${status})`}, observedAccount ?? account, usedToken, controller.signal); }
+      try { await accountPool.recordFailureAsync(account.id, accountNotice ? {status, message:accountNotice, markError:true} : {status, message:`Upstream request failed (${status})`}, observedAccount ?? account, usedToken, controller.signal); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record upstream failure'); }
     }
     if (ordinaryDispatched && account) {

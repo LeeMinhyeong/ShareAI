@@ -41,8 +41,9 @@ claude setup-token                                   # 출력된 sk-ant-oat... �
 node scripts/phase5-verify.mjs import anthropic claude-sub C:\경로\claude-token.txt
 # node scripts/phase5-verify.mjs login anthropic claude-sub   # 방법 2: 브라우저 로그인 후 code#state 붙여넣기
 
-# Claude API 키
-$env:P5_ANTHROPIC_KEY = "sk-ant-api03-..."
+# Claude API 키 (Console에서 만든 키. 개인 키는 sk-ant-usr-..., 예전 워크스페이스 키는 sk-ant-api03-... 형태)
+# 키를 만들 때 워크스페이스를 지정한다. 지정하지 않은 키는 요청마다 워크스페이스 ID가 필요해서 ShareAI로는 400이 난다.
+$env:P5_ANTHROPIC_KEY = "<Console에서 복사한 키>"
 node scripts/phase5-verify.mjs import-env anthropic claude-api P5_ANTHROPIC_KEY
 
 # Codex 구독 (브라우저 로그인. localhost:1455 콜백. Codex CLI 로그인과 동시에 하지 말 것)

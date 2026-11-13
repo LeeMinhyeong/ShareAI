@@ -342,7 +342,9 @@ for (const [label, path, body, headers, head, tail, settled] of [
   ['responses: response.completed', '/v1/responses', codexBody, codexHeadersPlain, codexFrames[0], codexFrames.slice(1), 'clean'],
 ]) {
   test(`${label} is withheld from the client until the attempt is settled`, async () => {
-    const a = path === '/v1/messages' ? anthropicKey(`order-${label}`) : openaiKey(`order-${label}`);
+    // Key fixtures use only key characters: dispatch refuses a Claude API key with anything else.
+    const slug = label.replace(/[^A-Za-z0-9]+/g, '-');
+    const a = path === '/v1/messages' ? anthropicKey(`order-${slug}`) : openaiKey(`order-${slug}`);
     const held = heldUpstream();
     upstream(() => new Response(held.body, {headers:{'content-type':'text/event-stream'}}));
     const r = streamingSend(path, body, headers);

@@ -11,6 +11,9 @@ import { CredentialVault } from '../../utils/encryption.js';
 const vault = new CredentialVault();
 export const refreshFingerprint = (provider: string, token: string) => createHash('sha256').update(JSON.stringify([provider, token])).digest('hex');
 const CREDIT_EXHAUSTION_NOTICE = /^API 크레딧 소진\([a-z_]{1,64}\): 크레딧을 충전한 뒤 계정을 다시 켜세요$/;
+// Router-generated notices (ADR 0020). They are fixed texts that cannot carry a credential, so the admin API shows them as is.
+const WORKSPACE_UNSCOPED_NOTICE = '워크스페이스 미지정 API 키: 워크스페이스를 지정한 키로 바꾼 뒤 계정을 다시 켜세요';
+const isRouterNotice = (text: string) => CREDIT_EXHAUSTION_NOTICE.test(text) || text === WORKSPACE_UNSCOPED_NOTICE;
 type AdminAccount = Omit<UpstreamAccount, 'credentials' | 'meta' | 'quotaInfo'> & { credentialStatus: 'available' | 'unavailable' };
 
 function parseJson<T>(text: string | null | undefined, fallback: T): T {
@@ -309,11 +312,11 @@ export class AccountRepository {
     const { credentials, meta, quotaInfo, ...safe } = this.rowToAccount(row, '');
     // Upstream error text can contain old credentials even after replacement.
     // Preserve it in storage, but never return it through the admin API.
-    // ADR 0020: the router-generated credit exhaustion notice is shown as is; its
-    // code is limited to [a-z_], so it cannot carry a credential.
+    // ADR 0020: router-generated notices are shown as is; the credit notice's code is
+    // limited to [a-z_] and the workspace notice is a fixed text, so neither can carry a credential.
     const lastError = credentialStatus === 'unavailable'
       ? 'Credential unavailable; verify the encryption key or replace credentials'
-      : safe.lastError && CREDIT_EXHAUSTION_NOTICE.test(safe.lastError) ? safe.lastError
+      : safe.lastError && isRouterNotice(safe.lastError) ? safe.lastError
       : safe.lastError ? 'Account error details redacted' : null;
     return { ...safe, lastError, credentialStatus };
   }

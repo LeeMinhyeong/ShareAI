@@ -51,7 +51,9 @@ export async function infer(provider: string, auth: Auth, request: ChatRequest, 
 }
 async function inferInternal(provider: string, auth: Auth, request: ChatRequest, endpoint: string | undefined, signal: AbortSignal | undefined, invoke: ((start: () => Promise<Response>) => Promise<Response>) | undefined, strict: Function | undefined): Promise<AsyncGenerator<InferenceEvent>> {
   if (!['openai','anthropic'].includes(provider) || !['oauth','api_key','siwc'].includes(auth.kind) || (auth.kind === 'siwc' && (provider !== 'openai' || endpoint !== undefined)) || !auth.token || /[\r\n]/.test(auth.token)) throw new UpstreamError(400, 'Unsupported or invalid credentials');
-  if (auth.kind === 'api_key' && !(provider === 'anthropic' ? auth.token.startsWith('sk-ant-api') : auth.token.startsWith('sk-'))) throw new UpstreamError(400, 'Unsupported or invalid API key');
+  // Same literal as oauth.ts and passthrough.ts (a test compares them): any `sk-ant-` key except OAuth
+  // tokens (oat/ort), session cookies (sid) and Admin keys. A Claude key is never sent to OpenAI.
+  if (auth.kind === 'api_key' && !(provider === 'anthropic' ? /^sk-ant-(?!oat|ort|admin|sid)[A-Za-z0-9_-]+$/.test(auth.token) : auth.token.startsWith('sk-') && !auth.token.startsWith('sk-ant-'))) throw new UpstreamError(400, 'Unsupported or invalid API key');
   if (!Array.isArray(request.messages) || !request.messages.length || request.messages.some(m => !m || !['system','developer','user','assistant'].includes(m.role) || typeof m.content !== 'string' || Object.keys(m).some(k => k !== 'role' && k !== 'content'))) throw new UpstreamError(400, 'Only text system, developer, user and assistant messages are supported');
   const system = request.messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => m.content).join('\n\n');
   const messages = request.messages.filter(m => m.role === 'user' || m.role === 'assistant');

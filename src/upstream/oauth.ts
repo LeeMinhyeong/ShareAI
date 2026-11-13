@@ -109,7 +109,7 @@ function build(creds: OAuthCredentials, meta: AccountMeta): ParsedCredential {
  *  Claude:
  *   - ~/.claude/.credentials.json 내용   {"claudeAiOauth":{accessToken,refreshToken,expiresAt,subscriptionType}}
  *   - `claude setup-token` 결과           sk-ant-oat01-...   (1년 유효, 갱신 불필요)
- *   - Anthropic API 키                    sk-ant-api03-...
+ *   - Anthropic API 키                    sk-ant-usr-... (개인 키), sk-ant-api03-... (워크스페이스 키) 등 sk-ant- 로 시작하는 키
  *  ChatGPT:
  *   - ~/.codex/auth.json 내용             {"tokens":{id_token,access_token,refresh_token,account_id}}
  *   - OpenAI API 키                       sk-...
@@ -119,11 +119,15 @@ export function parseImportedCredential(provider: OAuthProvider, input: string):
   if (!text) throw new Error('자격증명이 비어 있습니다.');
 
   if (provider === 'anthropic') {
-    if (text.startsWith('sk-ant-api')) {
-      return { credentialType: 'api_key', credentials: text, meta: { source: 'api_key' } };
-    }
-    if (text.startsWith('sk-ant-oat')) {
+    if (/^sk-ant-oat[A-Za-z0-9_-]+$/.test(text)) {
       return build({ kind: 'oauth', accessToken: text, refreshToken: null, expiresAt: null }, { source: 'setup_token' });
+    }
+    if (text.startsWith('sk-ant-admin')) throw new Error('Admin API 키는 추론에 쓸 수 없습니다. 일반 API 키를 넣어주세요.');
+    // Any other Claude key (personal `sk-ant-usr-`, legacy workspace `sk-ant-api..`, ...). Same literal
+    // as inference.ts and passthrough.ts (a test compares them); a bare refresh token (`ort`) or a
+    // claude.ai session cookie (`sid`) is not a usable credential.
+    if (/^sk-ant-(?!oat|ort|admin|sid)[A-Za-z0-9_-]+$/.test(text)) {
+      return { credentialType: 'api_key', credentials: text, meta: { source: 'api_key' } };
     }
     const obj = tryJson(text);
     const o = obj?.claudeAiOauth ?? obj;
@@ -145,6 +149,7 @@ export function parseImportedCredential(provider: OAuthProvider, input: string):
   }
 
   // openai
+  if (text.startsWith('sk-ant-')) throw new Error('Claude 키는 OpenAI 계정으로 등록할 수 없습니다.');
   if (/^sk-[A-Za-z0-9_-]{20,}$/.test(text)) {
     return { credentialType: 'api_key', credentials: text, meta: { source: 'api_key' } };
   }

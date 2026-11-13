@@ -16,7 +16,7 @@
 | 공급자 | 상태 코드 | 판별 근거 | 출처 |
 |---|---|---|---|
 | Anthropic | 402 | `error.type = "billing_error"` (결제·지불 정보 문제) | [Errors](https://platform.claude.com/docs/en/api/errors) |
-| Anthropic | 400 | `error.type = "invalid_request_error"`이고 문구가 `Your credit balance is too low ...` | 공식 문서에는 없다. 여러 사용자 보고와 SDK 이슈에서 같은 형태를 확인했다. |
+| Anthropic | 400 | `error.type = "invalid_request_error"`이고 메시지 전체가 `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.` (2026-11-12에 부분 일치에서 전체 일치로 바꿈) | 공식 문서에는 없다. 여러 사용자 보고와 SDK 이슈에서 같은 형태를 확인했다. |
 | OpenAI | 429 | `error.code`가 `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, `organization_usage_limit_exceeded` 중 하나. 예전 코드 `insufficient_quota`도 포함한다(`error.type`이 `insufficient_quota`일 수 있음). | [Error codes](https://developers.openai.com/api/docs/guides/error-codes): "Retrying billing, spend, or quota errors won't restore API access." |
 
 ## 결정
@@ -45,6 +45,23 @@
 6. **기록 시점:** 계정 상태는 기존 실패 기록(`recordFailureAsync`)과 같은 시점에 바꾼다.
    - 그 시점은 클라이언트에 오류를 쓴 직후다. 시도(OPEN)의 정산은 기존처럼 오류를 쓰기 전에 끝난다.
    - 기록은 관찰한 계정 상태(`state_revision`·자격증명)가 그대로일 때만 적용한다. 관리자가 그사이 키를 바꿨다면 적용하지 않는다.
+
+## 추가 (2026-11-12): 워크스페이스 미지정 API 키
+
+- 상태: **구현함, 사용자 확인 대기.** 실제 계정 확인 중에 발견했다. 사용자가 승인한 것은 크레딧 소진 처리이고, 이 항목은 같은 방식을 한 가지 경우에 더 적용한 것이다.
+- 배경: Console의 개인 키(`sk-ant-usr-`)와 서비스 계정 키는 워크스페이스를 지정하지 않고 만들 수 있다. 공식 문서상 그런 키는 요청마다 `anthropic-workspace-id` 헤더가 필요하고, 없으면 400 `invalid_request_error`(`This API key is not scoped to a workspace ...`)가 온다.
+- ShareAI는 클라이언트가 보낸 이 헤더를 차단하고(풀 계정 보호), 계정별 워크스페이스 ID도 저장하지 않는다. 그래서 이런 키는 등록은 되지만 요청이 전부 실패한다.
+- 결정: `/v1/messages`에서 API 키 계정이 이 400을 받으면 크레딧 소진과 같은 방식으로 처리한다.
+  - 계정을 `error`로 바꾸고 `워크스페이스 미지정 API 키: 워크스페이스를 지정한 키로 바꾼 뒤 계정을 다시 켜세요`를 남긴다. 관리 API는 이 고정 문구를 그대로 보여 준다.
+  - 공급자 오류는 그대로 전달한다. 다음 요청부터 다른 계정이 선택된다.
+  - 복구는 키를 워크스페이스 지정 키로 바꾸면서 다시 켜는 것이다(`PATCH {status:"active", credentials}`).
+  - 판정 조건은 상태 400, 타입 `invalid_request_error`, 문구 일치 세 가지 모두다. 구독 계정은 대상이 아니다.
+  - 문구는 메시지 **전체**가 정확히 일치해야 한다(크레딧 400 문구도 같다).
+    - 공급자의 검증 400은 클라이언트 입력을 메시지에 그대로 인용한다. 알 수 없는 필드 이름은 메시지 맨 앞에 오기도 한다(`<필드 이름>: Extra inputs are not permitted`). 라우터는 본문을 그대로 전달하므로, 부분 일치나 시작 일치로 판정하면 공유 사용자 한 명이 조작한 요청으로 계정을 끌 수 있다.
+    - 공급자가 필드 이름을 메시지 맨 앞에 싣는다는 것은 실제 응답으로 확인하지 않았다. 그렇다고 보고 보수적으로 막은 것이다.
+    - 남는 위험: 메시지 전체를 클라이언트가 정할 수 있는 400이 있다면 전체 일치도 뚫린다. 그런 오류는 알려진 것이 없지만, 없다고 증명된 것도 아니다. 근본 대책은 라우터가 고정 본문으로 직접 확인 요청을 보내는 것이다(BACKLOG).
+    - 워크스페이스 문구는 공식 인증 문서의 전문이다. 크레딧 문구는 공식 문서에 없어서 사용자 보고의 전문을 썼다. 공급자가 문구를 바꾸면 감지가 빠지고 이전 동작으로 돌아간다.
+- 하지 않은 것: 계정에 워크스페이스 ID를 저장해 라우터가 헤더를 붙이는 기능(BACKLOG). `/v1/chat/completions` 경로는 오류 본문을 읽지 않아 판정하지 않는다.
 
 ## 결과와 위험
 
