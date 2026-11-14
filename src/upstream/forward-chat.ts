@@ -579,7 +579,8 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
       try { accountPool.recordSiwcFailure(siwcSelected, siwcDispatchedRevision); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record SIWC failure'); }
     }
-    // Set only by the passthrough's own "unsupported content type" error: non-secret response shape for diagnosis.
+    // Set only when the router refuses a provider response's content type (passthrough, or chat completions'
+    // "did not return an event stream"): non-secret response shape for diagnosis.
     const upstreamShape = error instanceof UpstreamError ? error.upstreamShape : undefined;
     const streamDiag = error instanceof UpstreamError ? error.streamDiag : undefined;
     logger.error({status:logStatus, userId:user.id, ...(timedOut ? {routerTimeout:timedOut} : {}), ...(upstreamShape ? {upstream:upstreamShape} : {}), ...(streamDiag ? {upstreamStream:streamDiag} : {})}, 'Inference request failed');

@@ -22,9 +22,11 @@ function usageAccumulator() {
     get: () => ambiguous ? undefined : value,
   };
 }
+export const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+
 export class UpstreamError extends Error {
   headers?: Record<string, string>;
-  /** Server-log diagnosis only: non-secret shape of a provider response the passthrough refused to relay. */
+  /** Server-log diagnosis only: non-secret shape of a provider response the router refused (passthrough or chat completions). */
   upstreamShape?: { status: number; contentType: string | null; contentEncoding: string | null; contentLength: string | null; hasBody: boolean };
   /** Server-log diagnosis only: where a relayed provider stream stopped being valid. Fixed labels and counts, never content. */
   streamDiag?: { rule: string; bytes: number; frames: number; lead: string };
@@ -79,7 +81,7 @@ async function inferInternal(provider: string, auth: Auth, request: ChatRequest,
   } else if (auth.kind === 'oauth') {
     if (!auth.accountId || /[\r\n]/.test(auth.accountId)) throw new UpstreamError(400, 'Codex OAuth requires a ChatGPT account ID');
     if (request.temperature !== undefined || request.max_tokens !== undefined) throw new UpstreamError(400, 'Codex OAuth does not support temperature or max_tokens');
-    url = endpoint || 'https://chatgpt.com/backend-api/codex/responses';
+    url = endpoint || CODEX_RESPONSES_URL;
     headers = {'content-type':'application/json', 'authorization':`Bearer ${auth.token}`, 'chatgpt-account-id':auth.accountId, 'originator':'codex_cli_rs', 'accept':'text/event-stream'};
     body = {model:request.model, instructions:system || 'You are a helpful assistant.', input:messages.map(m => ({role:m.role, content:[{type:m.role === 'assistant' ? 'output_text':'input_text', text:m.content}]})), stream:true, store:false};
     protocol = 'codex';
@@ -110,12 +112,77 @@ async function inferInternal(provider: string, auth: Auth, request: ChatRequest,
     try { void response.body?.cancel().catch(() => {}); } catch { /* observed status is authoritative */ }
     throw new UpstreamError(response.status, `Upstream returned HTTP ${response.status}`, respHeaders);
   }
-  if (!response.body || !response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+  const contentType = response.headers.get('content-type');
+  // ADR 0019 item 7 (chat completions, 2026-11-14): the Codex subscription backend answers 200 with no
+  // Content-Type at all. Only then is the body read as an event stream; frame validation is unchanged.
+  // The router always asks this backend for a stream, so the client's own stream flag does not matter.
+  const untyped = !!response.body && response.status === 200 && contentType === null && protocol === 'codex' && url === CODEX_RESPONSES_URL;
+  if (!response.body || !(untyped || contentType?.toLowerCase().includes('text/event-stream'))) {
     // Invalid headers already establish the outcome; disposal must not delay or replace it.
     try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
-    throw new UpstreamError(502, 'Upstream did not return an event stream');
+    throw Object.assign(new UpstreamError(502, 'Upstream did not return an event stream'), { upstreamShape: responseShape(response) });
   }
-  return strict ? parseStrictEvents(response.body, protocol, signal) : parseEvents(response.body, protocol, signal);
+  if (!untyped) return strict ? parseStrictEvents(response.body!, protocol, signal) : parseEvents(response.body!, protocol, signal);
+  const diag = { bytes: 0, frames: 0, lead: undefined as string | undefined };
+  const counted = countingBody(response.body!, diag);
+  return diagnosedEvents(strict ? parseStrictEvents(counted, protocol, signal) : parseEvents(counted, protocol, signal), diag, signal);
+}
+
+/** Non-secret header shape of a refused provider response, for the server log (as in passthrough.ts). */
+function responseShape(response: Response): NonNullable<UpstreamError['upstreamShape']> {
+  const clean = (value: string | null) => value === null ? null : value.replace(/[^\x20-\x7e]/g, '?').slice(0, 100);
+  return { status: response.status, contentType: clean(response.headers.get('content-type')), contentEncoding: clean(response.headers.get('content-encoding')), contentLength: clean(response.headers.get('content-length')), hasBody: !!response.body };
+}
+
+/**
+ * Counts what an untyped body delivered: bytes, blank-line frame boundaries (approximate) and the kind of
+ * its first visible character. Plain objects only (this module also runs in a bare VM in tests); never
+ * content. Only getReader/read/cancel/releaseLock exist: a parser that used more of the stream API
+ * (reader.closed, async iteration, pipeThrough, body.cancel) would break here.
+ */
+function countingBody(body: ReadableStream<Uint8Array>, diag: { bytes: number; frames: number; lead: string | undefined }): ReadableStream<Uint8Array> {
+  const text = new TextDecoder('utf-8');
+  let tail = '';
+  return { getReader() {
+    const reader = body.getReader();
+    return {
+      async read() {
+        const result = await reader.read();
+        if (result.value) {
+          diag.bytes += result.value.byteLength;
+          const chunk = tail + text.decode(result.value, { stream: true });
+          diag.frames += (chunk.match(/\r?\n\r?\n/g) ?? []).length;
+          tail = chunk.slice(-3);
+          diag.frames -= (tail.match(/\r?\n\r?\n/g) ?? []).length;
+          if (diag.lead === undefined) {
+            const first = chunk.trimStart()[0];
+            if (first !== undefined) diag.lead = first === '<' ? 'markup' : first === '{' || first === '[' ? 'json' : /[a-z:]/.test(first) ? 'field' : 'other';
+          }
+        }
+        if (result.done) diag.frames += (tail.match(/\r?\n\r?\n/g) ?? []).length, tail = '';
+        return result;
+      },
+      cancel: (reason?: unknown) => reader.cancel(reason),
+      releaseLock: () => reader.releaseLock(),
+    };
+  } } as unknown as ReadableStream<Uint8Array>;
+}
+
+const MALFORMED_STREAM = new Set(['Malformed or incomplete upstream stream', 'Upstream stream ended prematurely', 'Unsupported or malformed upstream event']);
+
+/**
+ * A failure of an untyped stream carries its shape for the server log (ADR 0019 item 7): `untyped_stream_invalid`
+ * when the body broke the stream rules, `untyped_stream_failed` for any other failure (e.g. a provider error
+ * event inside a valid stream). Cancellation by the router or client is not labelled.
+ */
+async function* diagnosedEvents(events: AsyncGenerator<InferenceEvent>, diag: { bytes: number; frames: number; lead: string | undefined }, signal?: AbortSignal): AsyncGenerator<InferenceEvent> {
+  try { return yield* events; }
+  catch (error) {
+    if (error instanceof UpstreamError && !error.streamDiag && !signal?.aborted) {
+      error.streamDiag = { rule: MALFORMED_STREAM.has(error.message) ? 'untyped_stream_invalid' : 'untyped_stream_failed', bytes: diag.bytes, frames: diag.frames, lead: diag.lead ?? (diag.bytes ? 'blank' : 'empty') };
+    }
+    throw error;
+  }
 }
 
 // Shared SSE data-line decoding; validation remains mode-specific.

@@ -255,7 +255,7 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
   - `POST /admin/accounts`: 이름이 중복되면 500 `Failed to process admin account request`가 나온다.
 - 가져오기 형식 오류는 사유 코드가 하나(`credential_format_unrecognized`)다. JSON이 중간에 잘린 경우("파일 내용을 전부 복사했는지")처럼 파서가 구분하던 세부 사유는 응답에 나오지 않는다. 다시 헷갈리면 코드를 나눈다.
 - 가져오기 사유 판정은 저장 단계 전체(DB 연결, 암호화, INSERT)를 한 단계로 본다. SQLite의 `UNIQUE constraint failed: upstream_accounts.name` 오류만 이름 중복으로 보고, 그 밖의 저장 실패는 계속 `Could not import credentials`(400)로 나간다. 서버 쪽 실패인데 400인 점은 그대로다.
-- (실제 확인 2026-11-13) `/v1/chat/completions` 경로(`inference.ts`)도 `text/event-stream`이 아니면 502로 거부한다. Codex 구독 백엔드는 `Content-Type` 없이 스트림을 보내므로, 이 경로로 Codex 구독 계정을 쓰면 같은 이유로 실패할 것이다(실제 계정으로는 미확인). `/v1/responses`에만 예외를 넣었다(ADR 0019 7번).
+- (실제 확인 2026-11-13) `/v1/chat/completions` 경로(`inference.ts`)도 `text/event-stream`이 아니면 502로 거부한다. Codex 구독 백엔드는 `Content-Type` 없이 스트림을 보내므로, 이 경로로 Codex 구독 계정을 쓰면 같은 이유로 실패할 것이다(실제 계정으로는 미확인). `/v1/responses`에만 예외를 넣었다(ADR 0019 7번). → **2026-11-14 같은 예외를 이 경로에도 넣었다(ADR 0019 7번 확대).** 실제 계정 확인은 남음.
 - (실제 확인 2026-11-13) 공급자가 2xx로 답했는데 라우터가 응답을 읽지 못하면(형식 불일치, 깨진 스트림) 그 시도는 불확실한 것으로 남아 계정이 `open`으로 무기한 묶인다. 풀려면 서버를 끄고 `scripts/offline-open-recovery.mjs`를 써야 한다. 라우터가 스스로 끊은 요청처럼 60초 제한으로 바꿀지는 정책 결정이 필요하다(ADR 0008). → **2026-11-13 결정·구현:** 발송 뒤 네트워크 실패와 읽을 수 없거나 깨진 2xx 응답은 60초 제한으로 바꾼다(ADR 0008 개정).
 - (ADR 0008 2026-11-13 개정의 남은 일) 서버를 끄지 않고 관리자가 OPEN을 푸는 기능이 없다. 전송 결과를 보지 못한 발송, 정산 실패, 프로세스 종료로 남은 OPEN은 여전히 `scripts/offline-open-recovery.mjs`가 필요하다. Phase 6(운영)에서 다룬다.
 - (같은 개정의 알려진 단점) 공급자 쪽 원인이 계속되면 계정이 60초마다 돌아와 사용자 요청을 하나씩 더 실패시킨다. 연속 실패 backoff(최대 5분)는 프로세스별 메모리에만 있다. 같은 실패가 반복될 때 공유 제한을 늘리거나 관리자에게 알리는 방법을 검토한다. 실제 발생 빈도는 측정한 적이 없다.

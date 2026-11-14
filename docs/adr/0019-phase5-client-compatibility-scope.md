@@ -113,6 +113,11 @@ Phase 5의 목표는 Claude Code와 Codex CLI가 ShareAI를 실제로 쓸 수 �
 - `Content-Encoding`은 조건에 넣지 않았다. 형식이 적힌 스트림 경로도 검사하지 않고, 압축이 풀리지 않은 본문은 프레임 검증에서 걸린다.
 - 진단: 형식 불일치로 거부할 때는 서버 로그의 `upstream`에 응답의 상태 코드, content-type, content-encoding, content-length, 본문 유무를 남긴다. 스트림 검증이 실패할 때는 `upstreamStream`에 실패한 규칙 이름, 받은 바이트 수, 프레임 수, 본문 첫 글자의 종류(고정 라벨)를 남긴다. 본문·쿠키·자격증명은 남기지 않는다.
 - 확인: 수정 뒤 같은 구독의 새 계정으로 Codex CLI 0.167.2 요청 8건이 연속으로 성공했다(2026-11-13 15:12~15:14, 사용 기록 기준). 형식 없는 본문은 이벤트 스트림이었다.
+- `/v1/chat/completions`로 확대(사용자 결정, 2026-11-14): 이 경로는 Codex 구독 계정에 요청을 변환해 보내고, 응답이 `text/event-stream`이 아니면 502(`Upstream did not return an event stream`)로 거부했다. 같은 백엔드라 같은 문제가 난다고 보고(코드상 같은 검사, 실측은 안 함) 같은 예외를 넣었다.
+  - 조건: 상태 코드 200, `Content-Type` 헤더 없음, Codex 구독 백엔드로 보낸 요청. 이 경로는 클라이언트 요청과 상관없이 항상 백엔드에 스트림을 요청하므로 클라이언트의 `stream` 값은 조건이 아니다.
+  - 프레임 검증은 그대로다. 비스트림 클라이언트는 502를, 스트림 클라이언트는 200 뒤 오류 이벤트를 받는다. 그 계정은 ADR 0008대로 60초 쉰다.
+  - 진단: 형식 때문에 거부하면 로그 `upstream`에 응답 헤더 모양(상태 코드, content-type, content-encoding, content-length, 본문 유무)을 남긴다. 이 진단은 Codex 구독뿐 아니라 이 경로의 모든 거부에 붙는다(결정보다 넓음). 형식 없는 본문이 실패하면 `upstreamStream`에 규칙(본문이 스트림 규칙을 어기면 `untyped_stream_invalid`, 유효한 스트림 안의 공급자 오류 이벤트 등 그 밖은 `untyped_stream_failed`), 받은 바이트 수, 빈 줄 경계 수(근사), 첫 글자 종류(`markup`/`json`/`field`/`other`, 공백뿐이면 `blank`, 없으면 `empty`)를 남긴다. 라우터나 클라이언트가 취소한 경우는 남기지 않는다. 본문 내용은 남기지 않는다.
+  - 실제 확인은 아직이다. Codex 구독 계정을 등록하고 OpenAI 호환 클라이언트(예: `curl`)로 `/v1/chat/completions`를 보내 확인한다.
 
 ### 8. 쓸 수 있는 계정이 없을 때의 응답 (사용자 결정, 2026-11-14)
 
