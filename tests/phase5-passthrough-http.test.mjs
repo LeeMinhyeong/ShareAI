@@ -191,7 +191,7 @@ test('messages: an in-stream overloaded error is relayed and settles the attempt
   assert.ok(restriction(a.id), '5xx-class provider error arms the shared restriction');
 });
 
-test('messages: a truncated stream ends with a router error event and keeps the uncertain OPEN', async () => {
+test('messages: a truncated stream ends with a router error event and rests the account for 60s', async () => {
   const a = anthropicKey('m-trunc');
   const frames = claudeFrames.slice(0, 4);
   upstream(() => sse(frames));
@@ -202,7 +202,8 @@ test('messages: a truncated stream ends with a router error event and keeps the 
   assert.match(tail, /^event: error\ndata: /);
   assert.equal(JSON.parse(tail.split('\n')[1].slice(6)).type, 'error');
   assert.doesNotMatch(r.text, /message_stop/);
-  assert.ok(open(a.id), 'uncertain outcome keeps the OPEN (ADR 0008)');
+  assert.equal(open(a.id), undefined, 'the OPEN is converted (ADR 0008, 2026-11-13)');
+  assert.equal(restriction(a.id)?.duration_ms, 60_000, 'a broken 2xx stream rests the account for 60s');
 });
 
 test('messages: router errors use the Anthropic error envelope; OpenAI accounts are never used', async () => {
@@ -497,7 +498,7 @@ test('responses: the Codex backend stream that carries no Content-Type header is
   assert.equal((await send('/v1/responses', codexBody, codexHeaders)).headers['content-type'], 'text/event-stream; charset=utf-8');
 });
 
-test('responses: an untyped Codex body that is not a complete event stream ends with a router error event, keeps the uncertain OPEN, and the log names the failed rule', async () => {
+test('responses: an untyped Codex body that is not a complete event stream ends with a router error event, rests the account for 60s, and the log names the failed rule', async () => {
   const {logger} = await import('../src/utils/logger.ts');
   const original = logger.error, logged = [];
   logger.error = (...args) => { logged.push(args); };
@@ -521,7 +522,8 @@ test('responses: an untyped Codex body that is not a complete event stream ends 
       assert.match(tail, /^event: error\ndata: /, `${name}: nothing but the router's error event follows`);
       assert.equal(tail.split('\n\n').filter(Boolean).length, 1, name);
       assert.ok(!r.text.includes('marker-7731') && !r.text.includes('response.completed'), `${name}: bytes after the failure are never relayed`);
-      assert.ok(open(a.id), `${name}: uncertain outcome keeps the OPEN (ADR 0008)`);
+      assert.equal(open(a.id), undefined, `${name}: the OPEN is converted (ADR 0008, 2026-11-13)`);
+      assert.equal(restriction(a.id)?.duration_ms, 60_000, `${name}: a broken 2xx stream rests the account for 60s`);
       const entry = logged.find(args => args[1] === 'Inference request failed');
       assert.deepEqual(entry[0].upstreamStream, {...diag, bytes:Buffer.byteLength(text)}, name);
       assert.ok(!JSON.stringify(logged).includes('marker-7731'), `${name}: no body content in the log`);

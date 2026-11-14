@@ -27,7 +27,8 @@ function recovery429Duration(hint?: string, serverDate?: string): number | null 
   return recovery429DurationAt(Date.now(), hint, serverDate);
 }
 
-// Wait before an account whose dispatched attempt the router aborted returns (ADR 0008).
+// Wait before an account returns after a dispatched attempt ended without a provider terminal:
+// the router aborted it, or the provider exchange failed (ADR 0008, 2026-11-09 and 2026-11-13).
 export const ROUTER_ABORT_RESTRICTION_MS = 60_000;
 
 const usageRepo = new UsageLogRepository();
@@ -273,6 +274,13 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
   // was observed for the current dispatch; reset when a new attempt (e.g. the
   // 401 refresh retry) is dispatched. A later abort must not reinterpret it.
   let terminalObserved = false;
+  // The attempt whose provider exchange visibly ended: response headers arrived, or the
+  // network call failed. ADR 0008 (2026-11-13): if such an attempt then ends without a
+  // provider terminal (unreadable or broken response, network failure), the provider is no
+  // longer answering it, so it is converted like a router abort. A dispatch whose transport
+  // outcome was never observed stays out of this.
+  let ordinaryExchangeEnded: AccountAttempt | undefined;
+  let siwcExchangeEnded: {accountId:string; attemptId:string} | undefined;
   let siwcAttempt: {accountId:string; attemptId:string} | undefined;
   // This request-local token can only be emitted by the committed read-only
   // exhaustion callback, never by a provider or a failed writer transaction.
@@ -280,7 +288,13 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
   const committedConflict = Symbol('committed admission conflict');
   let committedConflictError: AccountAttemptOpen | AccountCooldownBeforeDispatch | undefined;
   const invokeOrdinary = async (observed: NonNullable<typeof account>, start: () => Promise<globalThis.Response>, allowReselectSignal = true) => {
-    const response = await invokeAccountAttempt(observed, controller.signal, () => { ordinaryDispatched = true; ordinaryDispatchedAttempt = ordinaryAttempt; terminalObserved = false; arm('first-response'); return start(); }, handle => { ordinaryAttempt = handle; }, () => {
+    const response = await invokeAccountAttempt(observed, controller.signal, () => {
+      ordinaryDispatched = true; ordinaryDispatchedAttempt = ordinaryAttempt; terminalObserved = false; arm('first-response');
+      const attempt = ordinaryAttempt, pending = start();
+      // The network call itself failed: the exchange is over without a response.
+      if (pending instanceof Promise) pending.catch(() => { ordinaryExchangeEnded = attempt; });
+      return pending;
+    }, handle => { ordinaryAttempt = handle; }, () => {
       if (ordinaryDispatched || !allowReselectSignal) throw new AccountQuotaUnavailable();
       throw committedQuotaExhaustion;
     }, error => {
@@ -288,6 +302,8 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
       committedConflictError = error;
       throw committedConflict;
     });
+    // Response headers arrived through the committed dispatch.
+    ordinaryExchangeEnded = ordinaryAttempt;
     if (!response.ok) {
       terminalObserved = true;
       const handle = ordinaryAttempt!;
@@ -390,8 +406,10 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
           }, {signal:controller.signal});
           let response: globalThis.Response;
           try { response = await result.pending; }
-          catch { throw new UpstreamError(502, 'SIWC upstream request failed'); }
+          catch { siwcExchangeEnded = attempt; throw new UpstreamError(502, 'SIWC upstream request failed'); }
+          // Not a response at all: nothing was observed about the exchange, so the OPEN stays.
           if (!(response instanceof globalThis.Response)) throw new UpstreamError(502, 'Invalid upstream response');
+          siwcExchangeEnded = attempt;
           if (response.ok) response = observeBody(response);
           else arm('first-response');
           if (!response.ok) {
@@ -500,19 +518,22 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
       try { await settleSiwc(siwcAttempt, {}); siwcAttempt = undefined; }
       catch { error = new UpstreamError(503, 'Unable to settle SIWC outcome'); }
     }
-    // ADR 0008 (2026-11-09): only this request's controller aborts — on client
-    // disconnect or the router's own inference timer. A dispatched attempt the
-    // router itself abandoned becomes a finite shared restriction in the same
-    // transaction that deletes its exact OPEN, so the account recovers through
-    // monotonic expiry. Undispatched claims keep their exact release; all other
-    // uncertain outcomes keep the OPEN, as does an uncertain conversion.
-    if (routerAborted && !terminalObserved) {
-      if (ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt) {
+    // ADR 0008 (2026-11-09, 2026-11-13): a dispatched attempt that ended without a
+    // provider terminal becomes a finite shared restriction in the same transaction
+    // that deletes its exact OPEN, so the account recovers through monotonic expiry.
+    // That covers an attempt the router itself abandoned (only this request's
+    // controller aborts: client disconnect or the router's inference timer) and an
+    // attempt whose provider exchange visibly ended (network failure, unreadable or
+    // broken response). Undispatched claims keep their exact release. A dispatch
+    // whose transport outcome was never observed, a failed settlement after a
+    // provider terminal and an uncertain conversion keep the OPEN.
+    if (!terminalObserved) {
+      if (ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt && (routerAborted || ordinaryExchangeEnded === ordinaryAttempt)) {
         const handle = ordinaryAttempt;
         try { await settleAccountAttempt(handle, db => arm429V2(db, 'upstream', handle.accountId, ROUTER_ABORT_RESTRICTION_MS)); ordinaryAttempt = undefined; }
         catch { /* Unknown conversion outcome: retain the OPEN. */ }
       }
-      if (siwcAttempt && siwcDispatchedAttempt === siwcAttempt) {
+      if (siwcAttempt && siwcDispatchedAttempt === siwcAttempt && (routerAborted || siwcExchangeEnded === siwcAttempt)) {
         try { await settleSiwc(siwcAttempt, {durationMs:ROUTER_ABORT_RESTRICTION_MS}); siwcAttempt = undefined; }
         catch { /* Unknown conversion outcome: retain the OPEN. */ }
       }

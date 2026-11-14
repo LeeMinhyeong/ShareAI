@@ -333,8 +333,8 @@ export async function startPassthrough(parsed: ParsedPassthrough, auth: Pick<Res
   // (observed with a real subscription account, 2026-11-13). Only that exact case is read as an event
   // stream: status 200, the header absent (not another type), the client asked for a stream, and the
   // request went to the Codex backend. relayFrames still validates every frame: bytes that fail
-  // validation are never relayed, the client stream ends with an error event and the attempt stays
-  // uncertain (the server log names the failed rule). The client gets the content type the provider left out.
+  // validation are never relayed, the client stream ends with an error event and the account rests
+  // for 60 seconds (ADR 0008; the server log names the failed rule). The client gets the content type the provider left out.
   if (response.body && response.status === 200 && contentType === null && parsed.stream && url === CODEX_RESPONSES_URL) {
     return { kind: 'stream', status: response.status, headers: { ...forwardHeaders, 'content-type': 'text/event-stream' }, frames: relayFrames(response.body, parsed.protocol, signal) };
   }

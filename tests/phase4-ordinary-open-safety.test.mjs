@@ -27,6 +27,8 @@ const nativeFetch=globalThis.fetch;
 function request(model='gpt-5'){return new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port:server.address().port,path:'/v1/chat/completions',method:'POST',headers:{authorization:'Bearer fixture-key','content-type':'application/json'}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);req.end(JSON.stringify({model,messages:[{role:'user',content:'hello'}],router_options:{strategy:'priority'}}));});}
 const create=(name,priority=0)=>repo.create({name,provider:'openai',credentialType:'api_key',credentials:`sk-${name}`,priority});
 const open=id=>db.prepare('SELECT account_id,attempt_id FROM ordinary_account_attempts WHERE account_id=?').get(id);
+// ADR 0008 (2026-11-13): a provider exchange that ended without a terminal converts the OPEN into a 60s restriction.
+const rested=id=>{assert.equal(open(id),undefined,'OPEN converted');assert.equal(Number(db.prepare("SELECT duration_ms FROM account_429_v2_restrictions WHERE kind='upstream' AND account_id=?").get(id)?.duration_ms),60000,'60s restriction armed');};
 after(async()=>{globalThis.fetch=nativeFetch;server.closeAllConnections();await new Promise(r=>server.close(r));closeDatabase();rmSync(dir,{recursive:true,force:true})});
 
 test('OPEN survives 200 headers and closes only after complete terminal', {timeout:10000},async()=>{
@@ -35,14 +37,14 @@ test('OPEN survives 200 headers and closes only after complete terminal', {timeo
  try {const pending=request();await barrier;assert.ok(open(a.id));body.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));body.close();assert.equal(await pending,200);await handling;assert.equal(open(a.id),undefined);}
  finally {globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'})}
 });
-test('truncated stream remains OPEN', {timeout:10000},async()=>{
+test('truncated stream converts the OPEN into a 60s restriction', {timeout:10000},async()=>{
  const a=create('truncated');globalThis.fetch=async()=>new Response('data: {"choices":[]}\n\n',{headers:{'content-type':'text/event-stream'}});
- try {assert.equal(await request(),502);await handling;assert.ok(open(a.id));}finally{globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'})}
+ try {assert.equal(await request(),502);await handling;rested(a.id);}finally{globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'})}
 });
-test('DONE alone leaves OPEN and a new request selects B', {timeout:10000},async()=>{
+test('DONE alone rests A for 60s and a new request selects B', {timeout:10000},async()=>{
  const a=create('done-alone'),b=create('done-b',10),calls=[];
  globalThis.fetch=async (_url,opts)=>{calls.push(opts.headers.authorization);return new Response(calls.length===1?'data: [DONE]\n\n':'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}})};
- try {assert.equal(await request(),502);await handling;assert.ok(open(a.id));assert.equal(await request(),200);await handling;assert.deepEqual(calls,['Bearer sk-done-alone','Bearer sk-done-b']);assert.ok(open(a.id));assert.equal(open(b.id),undefined);}
+ try {assert.equal(await request(),502);await handling;rested(a.id);assert.equal(await request(),200);await handling;assert.deepEqual(calls,['Bearer sk-done-alone','Bearer sk-done-b']);rested(a.id);assert.equal(open(b.id),undefined);}
  finally {globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'});repo.update(b.id,{status:'disabled'})}
 });
 test('contradictory Codex completion is rejected', async()=>{
@@ -61,9 +63,9 @@ test('redirect never dispatches to a different origin', {timeout:10000},async()=
  try {assert.equal(await request('claude-sonnet-4'),502);await handling;assert.equal(initial,1);assert.equal(seenKey,'sk-ant-api-fixture');assert.equal(leaked,0);}
  finally {globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'});provider.closeAllConnections();destination.closeAllConnections();await new Promise(r=>provider.close(r));await new Promise(r=>destination.close(r))}
 });
-test('post-start network failure leaves OPEN and never retries', {timeout:10000},async()=>{
+test('post-start network failure rests the account for 60s and never retries', {timeout:10000},async()=>{
  const a=create('network-unknown');let calls=0;globalThis.fetch=async()=>{calls++;throw Error('connection lost')};
- try {assert.equal(await request(),502);await handling;assert.equal(calls,1);assert.ok(open(a.id));}finally{globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'})}
+ try {assert.equal(await request(),502);await handling;assert.equal(calls,1);rested(a.id);}finally{globalThis.fetch=nativeFetch;repo.update(a.id,{status:'disabled'})}
 });
 test('known non-429 rejection settles despite body cancellation failure', {timeout:10000},async()=>{
  const a=create('known-rejection');globalThis.fetch=async()=>new Response(new ReadableStream({cancel(){throw Error('cancel failed')}}),{status:400});

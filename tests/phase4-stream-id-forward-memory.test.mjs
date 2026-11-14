@@ -66,7 +66,7 @@ function assertSequence(actual, text, finish) {
 // This router allows omitted IDs but requires any present IDs to be strings and
 // consistent. Other compatible providers need not make the same guarantee;
 // this synthetic ordinary OpenAI-protocol test does not exercise Codex SIWC.
-test('authenticated streaming rejects a non-string response id after emitted text, retaining OPEN', {timeout:10000}, async () => {
+test('authenticated streaming rejects a non-string response id after emitted text, resting the account', {timeout:10000}, async () => {
   const db = new Database(':memory:'); const nativeFetch = globalThis.fetch;
   let manager, drained=false;
   try {
@@ -94,6 +94,7 @@ test('authenticated streaming rejects a non-string response id after emitted tex
     const forward=load('../src/upstream/forward-chat.ts',{'./passthrough.js':{parsePassthrough(){throw new Error('passthrough unused');},startPassthrough(){throw new Error('passthrough unused');},PassthroughHttpError:class extends Error{},PassthroughStreamFailure:class extends Error{},routerErrorBody:()=>({}),routerErrorFrame:()=>''},'../db/account-429-v2-store.js':v2,'./ordinary-429-deadline.js':ordinaryDeadline,'crypto':require('crypto'),'events':require('events'),'../account-pool/manager.js':{accountPool:pool},'../db/repositories/usage-logs.js':{UsageLogRepository:class {create(){}}},'../db/repositories/accounts.js':{RefreshIntentError:class extends Error {}},'../utils/logger.js':{logger},'./tokens.js':{resolveAuth:async()=>({kind:'api_key',token:'sk-synthetic-token',observedAccount:account})},'./inference.js':inference,'./account-quota.js':quota,'../db/client.js':{getDb:()=>db},'../db/async-writer.js':writer,'../utils/encryption.js':{CredentialVault:class {}},'./siwc-store.js':{},'./siwc-refresh.js':{},'../db/repositories/settings.js':{SettingsRepository:class {},STRATEGIES:['priority']}});
     let pending, dispatched;
     const openRows=()=>db.prepare('SELECT account_id,attempt_id FROM ordinary_account_attempts').all();
+    const restrictionMs=()=>db.prepare("SELECT duration_ms FROM account_429_v2_restrictions WHERE kind='upstream' AND account_id=?").get(account.id)?.duration_ms;
     const router=load('../src/routes/v1.ts',{'../config/env.js':{env:{NODE_ENV:'test'}},'express':express,'../auth/user-auth.js':auth,'../request-work.js':{requestWork:manager},'../utils/logger.js':{logger},'../upstream/forward-chat.js':{forwardMessages(_req,res){res.status(501).json({error:{type:'not_implemented',message:'fixture'}});},forwardResponses(_req,res){res.status(501).json({error:{type:'not_implemented',message:'fixture'}});},anthropicErrorEnvelope(){},anthropicErrorBody:(_s,message)=>({type:'error',error:{type:'api_error',message}}),forwardChat:(req,res)=>{forwards++;return pending=forward.forwardChat(req,res);}}}).default;
     async function request(payload,key='synthetic-client-key') {
       dispatched=undefined;
@@ -114,10 +115,10 @@ test('authenticated streaming rejects a non-string response id after emitted tex
       assert.equal(bad.body.includes('synthetic-client-key'),false,'response must not expose client credential');
       assert.equal(bad.body.includes('sk-synthetic-token'),false,'response must not expose upstream credential');
       assert.equal(dispatched.kind,'upstream'); assert.equal(dispatched.account_id,account.id); assert.match(dispatched.attempt_id,/^[0-9a-f-]{36}$/);
-      assert.deepEqual(openRows(),[{account_id:dispatched.account_id,attempt_id:dispatched.attempt_id}]);
+      assert.deepEqual(openRows(),[],'OPEN converted'); assert.equal(Number(restrictionMs()),60000,'a broken 2xx stream rests the account for 60s (ADR 0008, 2026-11-13)');
       assert.equal(successes,0);
-      // Simulate manual recovery only on this owned in-memory fixture.
-      db.prepare('DELETE FROM ordinary_account_attempts').run();
+      // Clear the 60s restriction only on this owned in-memory fixture so the next case can dispatch.
+      db.prepare('DELETE FROM account_429_v2_restrictions').run();
     }
     assert.equal(fetches,invalidIds.length); assert.equal(quotaCharges,invalidIds.length);
     // An unrelated malformed event has the same public error but must not hit the ID guard.
@@ -126,8 +127,8 @@ test('authenticated streaming rejects a non-string response id after emitted tex
     assert.equal(idGuardHits,beforeOther);
     const otherEvents=events(other);
     assertSequence(otherEvents,'visible',false);
-    assert.deepEqual(openRows(),[{account_id:dispatched.account_id,attempt_id:dispatched.attempt_id}]);
-    db.prepare('DELETE FROM ordinary_account_attempts').run();
+    assert.deepEqual(openRows(),[],'OPEN converted'); assert.equal(Number(restrictionMs()),60000,'a broken 2xx stream rests the account for 60s (ADR 0008, 2026-11-13)');
+    db.prepare('DELETE FROM account_429_v2_restrictions').run();
     const good=await request(frame(chunk('response-b','ok'))+frame(chunk('response-b',null,'stop'))+'data: [DONE]\n\n');
     const goodEvents=events(good);
     assertSequence(goodEvents,'ok',true);

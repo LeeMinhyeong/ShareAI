@@ -1,6 +1,6 @@
 # Offline OPEN recovery
 
-This is a manual, offline operation; it is never run by application startup. An OPEN fence may represent a request that reached the provider. Clearing it without establishing the external outcome can cause duplicate work, charges, or other effects. **If the outcome or absence of in-flight work cannot be confirmed, do not recover.** There is no automatic expiry or remote verification.
+This is a manual, offline operation; it is never run by application startup. An OPEN fence may represent a request that reached the provider. Clearing it without establishing the external outcome can cause duplicate work, charges, or other effects. **If the outcome or absence of in-flight work cannot be confirmed, do not recover.** There is no automatic expiry or remote verification for the OPEN rows this tool handles. Since the ADR 0008 amendments of 2026-11-09 and 2026-11-13 the router itself converts an OPEN into a 60-second restriction when it aborted the attempt or when the provider exchange visibly ended (network failure, unreadable or broken 2xx response); what remains OPEN is a dispatch whose transport outcome was never observed, a failed settlement, or a crashed process.
 
 ## Before any write
 

@@ -109,7 +109,7 @@ Phase 5의 목표는 Claude Code와 Codex CLI가 ShareAI를 실제로 쓸 수 �
   - `Content-Type` 헤더가 아예 없다(빈 값이나 다른 형식은 해당하지 않는다).
   - 클라이언트가 스트림을 요청했다(`stream: true`).
   - 요청이 Codex 구독 백엔드로 갔다(OpenAI API 키와 Anthropic은 해당하지 않는다).
-- 프레임 검증은 그대로다. 검증에 실패한 바이트는 전달하지 않는다. 헤더는 첫 프레임을 읽기 전에 나가므로, 본문이 완결된 이벤트 스트림이 아니면 클라이언트는 200과 오류 이벤트를 받고 그 시도는 불확실한 것으로 남는다(수정 전에는 502 JSON이었다). 클라이언트에는 `Content-Type: text/event-stream`을 붙여 보낸다.
+- 프레임 검증은 그대로다. 검증에 실패한 바이트는 전달하지 않는다. 헤더는 첫 프레임을 읽기 전에 나가므로, 본문이 완결된 이벤트 스트림이 아니면 클라이언트는 200과 오류 이벤트를 받고 그 계정은 60초 제한 뒤 돌아온다(ADR 0008 2026-11-13 개정. 그전에는 OPEN으로 무기한 남았다). 형식 예외를 넣기 전에는 502 JSON이었다. 클라이언트에는 `Content-Type: text/event-stream`을 붙여 보낸다.
 - `Content-Encoding`은 조건에 넣지 않았다. 형식이 적힌 스트림 경로도 검사하지 않고, 압축이 풀리지 않은 본문은 프레임 검증에서 걸린다.
 - 진단: 형식 불일치로 거부할 때는 서버 로그의 `upstream`에 응답의 상태 코드, content-type, content-encoding, content-length, 본문 유무를 남긴다. 스트림 검증이 실패할 때는 `upstreamStream`에 실패한 규칙 이름, 받은 바이트 수, 프레임 수, 본문 첫 글자의 종류(고정 라벨)를 남긴다. 본문·쿠키·자격증명은 남기지 않는다.
 - 확인: 수정 뒤 같은 구독의 새 계정으로 Codex CLI 0.167.2 요청 8건이 연속으로 성공했다(2026-11-13 15:12~15:14, 사용 기록 기준). 형식 없는 본문은 이벤트 스트림이었다.
@@ -141,7 +141,7 @@ Phase 5의 목표는 Claude Code와 Codex CLI가 ShareAI를 실제로 쓸 수 �
 4. **엄격한 종료 판정:**
    - Anthropic: `message_start` → … → `message_delta` → `message_stop`이 모두 와야 완료다.
    - Responses: `response.completed`(status `completed`)가 와야 완료로 보고, `response.failed`·`response.incomplete`는 실패로 처리한다.
-   - 잘린 스트림은 불확정 결과로 보고 OPEN을 유지한다.
+   - 잘린 스트림은 불확정 결과로 보고 OPEN을 유지한다. (2026-11-13: ADR 0008 개정으로 OPEN 대신 60초 제한으로 전환한다. 재전송하지 않는 것은 그대로다.)
 5. **설정 안내:** README에 Claude Code(`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`)와 Codex(`config.toml`의 `model_providers`) 설정법과 확인 절차를 적는다.
 6. **실제 클라이언트·실제 계정 확인 (사용자 실행):** Claude Code×(구독, API)와 Codex×(구독, API) 네 조합 각각에서 다음을 확인한다.
    - 간단한 질문

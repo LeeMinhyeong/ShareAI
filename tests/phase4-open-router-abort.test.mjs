@@ -1,7 +1,9 @@
-// ADR 0008 amendment (2026-11-09) / ADR 0016 item 4: a router-initiated abort of
-// a dispatched ordinary attempt (client disconnect or the router's inference
-// timer) must convert the OPEN into a 60s v2 restriction, while a provider
-// network failure keeps the conservative indefinite OPEN.
+// ADR 0008 amendments (2026-11-09, 2026-11-13) / ADR 0016 item 4: a dispatched attempt
+// that ends without a provider terminal converts its OPEN into a 60s v2 restriction when
+// the router itself aborted it (client disconnect, inference timer) or when the provider
+// exchange visibly ended (network failure, unreadable or broken 2xx response). A dispatch
+// whose transport outcome was never observed and any uncertain settlement keep the
+// indefinite OPEN.
 // Real Express + authenticateUser + forwardChat over a test-owned file SQLite;
 // synthetic fetch only. The default-suite entry re-runs this file in a child
 // with a scratch cwd (no .env: src/config/env.ts calls dotenv.config()) and an
@@ -36,7 +38,7 @@ if (!ISOLATED) {
       const summary = output.split(/\r?\n/).filter(line => /^(✔|✖|ℹ (tests|pass|fail))/.test(line)).join('\n');
       assert.equal(code, 0, summary);
       assert.match(output, /^ℹ fail 0$/m);
-      assert.match(output, /^ℹ pass 9$/m);
+      assert.match(output, /^ℹ pass 22$/m);
     } finally { rmSync(cwd, {recursive:true, force:true}); }
   });
 } else {
@@ -99,15 +101,34 @@ if (!ISOLATED) {
   const {responseStream} = await import('./phase4-protocol-fixtures.mjs');
   // Header, created … first delta of a Responses lifecycle, then nothing more.
   const siwcPartial = responseStream.split('\n\n').slice(0, 5).join('\n\n') + '\n\n';
-  globalThis.fetch = async (url, opts) => {
+  const sse = {'content-type':'text/event-stream'};
+  // Not async: 'sync-throw' fails inside the dispatch step itself, before any transport outcome exists.
+  globalThis.fetch = (url, opts) => {
+    if (mode === 'sync-throw') { calls.push('sync-throw'); throw new TypeError('synthetic dispatch failure'); }
+    return respond(url, opts);
+  };
+  const respond = async (url, opts) => {
     if (String(url).endsWith('/v1/responses')) {
       calls.push('siwc'); dispatched?.();
       if (mode === 'network') throw new TypeError('synthetic network failure');
+      if (mode === 'truncated') return new Response(siwcPartial, {headers:sse});
+      if (mode === 'wrong-type') return new Response('<html>synthetic</html>', {headers:{'content-type':'text/html'}});
+      if (mode === 'body-reset') {
+        let sent = false;
+        return new Response(new ReadableStream({pull(c) { if (sent) c.error(new TypeError('synthetic reset')); else { sent = true; c.enqueue(new TextEncoder().encode(siwcPartial)); } }}), {headers:sse});
+      }
+      if (mode === 'complete') return new Response(responseStream, {headers:sse});
       return new Response(new ReadableStream({start(c) { c.enqueue(new TextEncoder().encode(siwcPartial)); }}), {headers:{'content-type':'text/event-stream'}});
     }
     calls.push(opts.headers.authorization); dispatched?.();
     if (mode === 'complete') return new Response(delta('ok') + complete, {headers:{'content-type':'text/event-stream'}});
     if (mode === 'network') throw new TypeError('synthetic network failure');
+    if (mode === 'truncated') return new Response(delta('partial'), {headers:sse});
+    if (mode === 'wrong-type') return new Response('<html>synthetic</html>', {headers:{'content-type':'text/html'}});
+    if (mode === 'body-reset') {
+      let sent = false;
+      return new Response(new ReadableStream({pull(c) { if (sent) c.error(new TypeError('synthetic reset')); else { sent = true; c.enqueue(new TextEncoder().encode(delta('partial'))); } }}), {headers:sse});
+    }
     if (mode === 'no-headers') return new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason), {once:true}));
     // 'hang': headers and one delta, then the generation never finishes.
     return new Response(new ReadableStream({start(c) { c.enqueue(new TextEncoder().encode(delta('partial'))); }}), {headers:{'content-type':'text/event-stream'}});
@@ -172,14 +193,70 @@ if (!ISOLATED) {
     assert.equal(open(b.id), undefined);
   });
 
-  test('provider network failure after dispatch keeps the indefinite OPEN', {timeout:10000}, async () => {
-    const a = create('network'); isolate(a); mode = 'network';
-    const r = await bounded(request({stream:false}), 3000, 'request');
-    assert.notEqual(r.status, 200);
+  // ADR 0008 (2026-11-13). Long router limits: these must end through the provider failure, not a router timer.
+  const providerFailure = async fn => {
+    const saved = {...INFERENCE_TIMEOUTS};
+    Object.assign(INFERENCE_TIMEOUTS, {firstResponseMs:5000, idleMs:5000});
+    try { await fn(); } finally { Object.assign(INFERENCE_TIMEOUTS, saved); }
+  };
+  for (const [label, failure] of [['a network failure before response headers', 'network'], ['a stream that ends without a terminal', 'truncated'], ['an unreadable 2xx response', 'wrong-type'], ['a connection reset while reading the body', 'body-reset']]) {
+    test(`${label} converts the OPEN into a 60s restriction`, {timeout:10000}, () => providerFailure(async () => {
+      const a = create(`provider-${failure}`); isolate(a); mode = failure;
+      const before = calls.length;
+      const r = await bounded(request({stream:false}), 3000, 'request');
+      assert.equal(r.status, 502, 'a provider failure, not a router timeout');
+      await bounded(handling, 3000, 'handler');
+      assert.equal(calls.length, before + 1, 'the request is never sent again');
+      assertConverted(a);
+      await followUpBlocked(a);
+    }));
+  }
+
+  test('after a provider failure on A, a new request is served by B', {timeout:10000}, () => providerFailure(async () => {
+    const a = create('failed-a'), b = create('failed-b', 10); isolate(a, b); mode = 'network';
+    assert.equal((await bounded(request({stream:false}), 3000, 'request')).status, 502);
     await bounded(handling, 3000, 'handler');
+    assertConverted(a);
+    mode = 'complete'; const before = calls.length;
+    assert.equal((await bounded(request({stream:false}), 3000, 'follow-up')).status, 200);
+    assert.deepEqual(calls.slice(before), ['Bearer sk-failed-b']);
+  }));
+
+  test('a dispatch whose transport outcome was never observed keeps the indefinite OPEN', {timeout:10000}, () => providerFailure(async () => {
+    const a = create('unobserved'); isolate(a); mode = 'sync-throw';
+    const before = calls.length;
+    const r = await bounded(request({stream:false}), 3000, 'request');
+    assert.equal(r.status, 502);
+    await bounded(handling, 3000, 'handler');
+    assert.deepEqual(calls.slice(before), ['sync-throw']);
     assert.ok(open(a.id), 'conservative OPEN retained');
     assert.equal(restriction(a.id), undefined, 'no restriction substituted');
-  });
+  }));
+
+  // Settlement deletes the OPEN in the same transaction that arms a restriction. 'every' denies
+  // each delete; 'plain' denies only a delete that armed nothing first, so a conversion would commit.
+  const denyingSettlement = async (which, fn, kind = 'upstream') => {
+    const unarmed = which === 'plain' ? ` WHEN NOT EXISTS (SELECT 1 FROM account_429_v2_restrictions WHERE kind='${kind}' AND account_id=OLD.account_id)` : '';
+    db.exec(`CREATE TRIGGER test_deny_settle BEFORE DELETE ON ${kind === 'siwc' ? 'siwc' : 'ordinary'}_account_attempts${unarmed} BEGIN SELECT RAISE(ABORT,'denied'); END`);
+    try { await fn(); } finally { db.exec('DROP TRIGGER test_deny_settle'); }
+  };
+  test('an uncertain conversion after a provider failure keeps the OPEN and arms nothing', {timeout:10000}, () => providerFailure(() => denyingSettlement('every', async () => {
+    const a = create('conversion-fails'); isolate(a); mode = 'network';
+    assert.equal((await bounded(request({stream:false}), 3000, 'request')).status, 502);
+    await bounded(handling, 3000, 'handler');
+    assert.ok(open(a.id), 'OPEN retained');
+    assert.equal(restriction(a.id), undefined, 'the arm rolled back with the denied delete');
+  })));
+
+  test('a failed settlement after the provider terminal is not converted', {timeout:10000}, () => providerFailure(() => denyingSettlement('plain', async () => {
+    const a = create('settle-fails'); isolate(a); mode = 'complete';
+    const before = calls.length;
+    assert.notEqual((await bounded(request({stream:false}), 3000, 'request')).status, 200, 'an unsettled completion is not reported as success');
+    await bounded(handling, 3000, 'handler');
+    assert.deepEqual(calls.slice(before), ['Bearer sk-settle-fails'], 'the provider completed the request');
+    assert.ok(open(a.id), 'OPEN retained');
+    assert.equal(restriction(a.id), undefined, 'a settlement failure is not a provider failure');
+  })));
 
   // SIWC accounts: same policy through settleSiwc. Ordinary accounts are disabled.
   db.exec('CREATE TABLE IF NOT EXISTS siwc_accounts(id TEXT PRIMARY KEY, name TEXT NOT NULL)');
@@ -205,16 +282,47 @@ if (!ISOLATED) {
     assert.equal(Number(siwcRestriction('siwc-abort')?.duration_ms), 60000, '60s SIWC restriction armed');
   });
 
-  test('SIWC network failure after dispatch keeps the indefinite OPEN', {timeout:10000}, async () => {
-    isolate(); createSiwc('siwc-network'); mode = 'network';
+  test('SIWC dispatch whose transport outcome was never observed keeps the indefinite OPEN', {timeout:10000}, () => providerFailure(async () => {
+    isolate(); createSiwc('siwc-unobserved'); mode = 'sync-throw';
     const before = calls.length;
-    const r = await bounded(request({stream:false}), 3000, 'request');
-    assert.notEqual(r.status, 200);
+    assert.notEqual((await bounded(request({stream:false}), 3000, 'request')).status, 200);
     await bounded(handling, 3000, 'handler');
-    assert.deepEqual(calls.slice(before), ['siwc']);
-    assert.ok(siwcOpen('siwc-network'), 'conservative SIWC OPEN retained');
-    assert.equal(siwcRestriction('siwc-network'), undefined);
-  });
+    assert.deepEqual(calls.slice(before), ['sync-throw']);
+    assert.ok(siwcOpen('siwc-unobserved'), 'conservative SIWC OPEN retained');
+    assert.equal(siwcRestriction('siwc-unobserved'), undefined);
+  }));
+
+  for (const failure of ['network', 'truncated', 'wrong-type', 'body-reset']) {
+    test(`SIWC provider failure after dispatch (${failure}) converts its OPEN into a 60s restriction`, {timeout:10000}, () => providerFailure(async () => {
+      const id = `siwc-${failure}`;
+      isolate(); createSiwc(id); mode = failure;
+      const before = calls.length;
+      const r = await bounded(request({stream:false}), 3000, 'request');
+      assert.equal(r.status, 502, 'a provider failure, not a router timeout');
+      await bounded(handling, 3000, 'handler');
+      assert.deepEqual(calls.slice(before), ['siwc']);
+      assert.equal(siwcOpen(id), undefined, 'SIWC OPEN converted');
+      assert.equal(Number(siwcRestriction(id)?.duration_ms), 60000, '60s SIWC restriction armed');
+    }));
+  }
+
+  test('SIWC: an uncertain conversion after a provider failure keeps the OPEN and arms nothing', {timeout:10000}, () => providerFailure(() => denyingSettlement('every', async () => {
+    isolate(); createSiwc('siwc-conversion-fails'); mode = 'network';
+    assert.equal((await bounded(request({stream:false}), 3000, 'request')).status, 502);
+    await bounded(handling, 3000, 'handler');
+    assert.ok(siwcOpen('siwc-conversion-fails'), 'SIWC OPEN retained');
+    assert.equal(siwcRestriction('siwc-conversion-fails'), undefined, 'the arm rolled back with the denied delete');
+  }, 'siwc')));
+
+  test('SIWC: a failed settlement after the provider terminal is not converted', {timeout:10000}, () => providerFailure(() => denyingSettlement('plain', async () => {
+    isolate(); createSiwc('siwc-settle-fails'); mode = 'complete';
+    const before = calls.length;
+    assert.notEqual((await bounded(request({stream:false}), 3000, 'request')).status, 200, 'an unsettled completion is not reported as success');
+    await bounded(handling, 3000, 'handler');
+    assert.deepEqual(calls.slice(before), ['siwc'], 'the provider completed the request');
+    assert.ok(siwcOpen('siwc-settle-fails'), 'SIWC OPEN retained');
+    assert.equal(siwcRestriction('siwc-settle-fails'), undefined, 'a settlement failure is not a provider failure');
+  }, 'siwc')));
 
   test('SIWC router timer abort mid-stream converts its OPEN', {timeout:10000}, async () => {
     isolate(); createSiwc('siwc-timer'); mode = 'hang';

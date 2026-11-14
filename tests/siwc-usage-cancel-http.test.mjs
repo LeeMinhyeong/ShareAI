@@ -78,9 +78,12 @@ for(const mode of ['selection','open','started','throw','reject','stale','succes
   assert.deepEqual(logs,mode==='started'?[{success:0,aborted:1}]:(mode==='throw'||mode==='reject'||mode==='stale')?[{success:0,aborted:0}]:mode==='success'?[{success:1,aborted:0}]:[]);
   if(['throw','reject','stale'].includes(mode))assert.equal(db.prepare('SELECT status FROM siwc_usage_logs').get().status,mode==='reject'?502:503);
   assert.equal(calls,mode==='started'||mode==='success'?1:0);
-  // ADR 0008 (2026-11-09): a client disconnect after dispatch converts the OPEN into a 60s restriction.
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM siwc_account_attempts WHERE account_id='fixture-private-account-marker'").get().n,mode==='throw'||mode==='reject'||mode==='stale'?1:0);
-  if(mode==='started')assert.equal(Number(db.prepare("SELECT duration_ms FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id='fixture-private-account-marker'").get()?.duration_ms),60000);
+  // ADR 0008 (2026-11-09, 2026-11-13): a client disconnect after dispatch ('started') and a rejected network call
+  // ('reject') convert the OPEN into a 60s restriction. A dispatch step that threw before any transport outcome
+  // ('throw') and a stale dispatch keep the OPEN.
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM siwc_account_attempts WHERE account_id='fixture-private-account-marker'").get().n,mode==='throw'||mode==='stale'?1:0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id='fixture-private-account-marker'").get().n,mode==='started'||mode==='reject'?1:0);
+  if(mode==='started'||mode==='reject')assert.equal(Number(db.prepare("SELECT duration_ms FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id='fixture-private-account-marker'").get()?.duration_ms),60000);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM account_429_cooldowns WHERE kind='siwc' AND account_id='fixture-private-account-marker'").get().n,0);
   assert.equal(db.prepare("SELECT COALESCE(SUM(used),0) n FROM user_daily_quota WHERE user_id='u'").get().n,before+1);
  }finally{

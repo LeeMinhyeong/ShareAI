@@ -38,14 +38,14 @@ test('authenticated SIWC route trusts only unambiguous semantic limits after OPE
   let stderr='';child.stderr.on('data',x=>stderr+=x);let timer;
   const [ready]=await Promise.race([once(child,'message'),once(child,'exit').then(([code])=>{throw new Error(`worker exited ${code}: ${stderr}`)}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('worker timeout')),15000)})]).finally(()=>clearTimeout(timer));
   const cases=[
-   {id:'delta',body:frame({...base(),delta:'contradiction'}),status:502,open:true},
-   {id:'response-extra',body:frame({...base(),response:{...base().response,extra:true}}),status:502,open:true},
-   {id:'error-extra',body:frame({...base(),response:{...base().response,error:{...base().response.error,extra:true}}}),status:502,open:true},
-   {id:'wrong-event',body:frame(base(),'response.output_text.delta'),status:502,open:true},
-   {id:'wrong-status',body:frame({...base(),response:{...base().response,status:'completed'}}),status:502,open:true},
-   {id:'wrong-id',body:prefix+frame({...base(),response:{...base().response,id:'resp_other'}}),status:502,open:true},
-   {id:'missing-sequence',body:frame({type:'response.failed',response:base().response}),status:502,open:true},
-   {id:'partial-invalid',body:prefix+frame({...base(),delta:'contradiction'}),status:200,open:true,stream:true,invalidStream:true},
+   {id:'delta',body:frame({...base(),delta:'contradiction'}),status:502,rest:true},
+   {id:'response-extra',body:frame({...base(),response:{...base().response,extra:true}}),status:502,rest:true},
+   {id:'error-extra',body:frame({...base(),response:{...base().response,error:{...base().response.error,extra:true}}}),status:502,rest:true},
+   {id:'wrong-event',body:frame(base(),'response.output_text.delta'),status:502,rest:true},
+   {id:'wrong-status',body:frame({...base(),response:{...base().response,status:'completed'}}),status:502,rest:true},
+   {id:'wrong-id',body:prefix+frame({...base(),response:{...base().response,id:'resp_other'}}),status:502,rest:true},
+   {id:'missing-sequence',body:frame({type:'response.failed',response:base().response}),status:502,rest:true},
+   {id:'partial-invalid',body:prefix+frame({...base(),delta:'contradiction'}),status:200,rest:true,stream:true,invalidStream:true},
    {id:'valid',body:frame(base(),'response.failed'),status:429,cool:true},
    {id:'partial',body:prefix+frame(base(),'response.failed'),status:200,cool:true,stream:true},
    {id:'http',http429:true,status:429,cool:true},
@@ -58,10 +58,16 @@ test('authenticated SIWC route trusts only unambiguous semantic limits after OPE
    store.create(c.id,{issuer:'https://auth.openai.com',subject:'synthetic',clientId:c.id,accessToken:'synthetic-'+c.id,idToken:'synthetic',tokenType:'Bearer',expiresIn:3600,scopes:['chatgpt.tokens.use.direct'],savedAt:new Date().toISOString()});
    mode=c;calls=0;sawOpen=false;const result=await request(ready.port,c.id,c.stream);
    assert.equal(result.status,c.status,c.id);assert.equal(calls,1,c.id);assert.equal(sawOpen,true,c.id);
-   assert.equal(!!db.prepare('SELECT 1 FROM siwc_account_attempts WHERE account_id=?').get(c.id),!!c.open,c.id);
-   assert.equal(!!db.prepare("SELECT 1 FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id=?").get(c.id),!!c.cool,c.id);
+   // ADR 0008 (2026-11-13): an untrusted envelope is a 2xx response the router cannot use. It is never a 429 to the
+   // client and never a 429 settlement; the OPEN becomes the fixed 60s restriction (rest). A trusted limit (cool)
+   // keeps its own 429 duration.
+   assert.equal(db.prepare('SELECT 1 FROM siwc_account_attempts WHERE account_id=?').get(c.id),undefined,c.id);
+   const armed=db.prepare("SELECT duration_ms FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id=?").get(c.id);
+   assert.equal(!!armed,!!(c.cool||c.rest),c.id);
+   if(c.rest)assert.equal(Number(armed.duration_ms),60000,c.id);
+   if(c.cool)assert.equal(Number(armed.duration_ms),5000,`${c.id}: a trusted limit without a hint is settled as a 429 (5s minimum)`);
    if(c.stream){assert.match(result.body,/hello/);assert.match(result.body,c.invalidStream ? /Upstream stream failed/ : /subscription_sharing_usage_limit_exceeded/);assert.doesNotMatch(result.body,/\[DONE\]/);}
-   if(c.open){assert.equal((await request(ready.port,c.id)).status,503,c.id);assert.equal(calls,1,c.id);}
+   if(c.rest){assert.equal((await request(ready.port,c.id)).status,503,c.id);assert.equal(calls,1,c.id);}
   }
  } finally {if(child && child.exitCode===null && child.signalCode===null){child.kill();await once(child,'exit').catch(()=>{});}await new Promise(r=>provider.close(r));closeDatabase();rmSync(dir,{recursive:true,force:true});}
 });
