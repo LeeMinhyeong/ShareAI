@@ -15,6 +15,7 @@ import { arm429V2, assert429V2Schema } from '../db/account-429-v2-store.js';
 import { CredentialVault } from '../utils/encryption.js';
 import { SiwcStore, type SiwcSnapshot } from './siwc-store.js';
 import type Database from 'better-sqlite3';
+import type { CredentialType } from '../db/schema.js';
 import { refreshSiwcSnapshot } from './siwc-refresh.js';
 import { SettingsRepository, STRATEGIES } from '../db/repositories/settings.js';
 
@@ -30,6 +31,17 @@ function recovery429Duration(hint?: string, serverDate?: string): number | null 
 // Wait before an account returns after a dispatched attempt ended without a provider terminal:
 // the router aborted it, or the provider exchange failed (ADR 0008, 2026-11-09 and 2026-11-13).
 export const ROUTER_ABORT_RESTRICTION_MS = 60_000;
+
+// ADR 0019 item 8: when no account can serve a request, tell the client whether waiting helps.
+// A known wait up to this limit is a 429 with Retry-After, which clients retry; anything longer, or
+// anything an administrator must fix, is a 403, which clients show instead of retrying.
+export const NO_ACCOUNT_WAIT_LIMIT_MS = 300_000;
+export const NO_ACCOUNT_RETRY_MESSAGE = 'All upstream accounts for this request are busy or resting. Retry shortly.';
+export const NO_ACCOUNT_ADMIN_MESSAGE = 'No upstream account can serve this request now. Contact the administrator.';
+function noAccountError(waitMs: number | null): UpstreamError {
+  if (waitMs !== null && waitMs <= NO_ACCOUNT_WAIT_LIMIT_MS) return new UpstreamError(429, NO_ACCOUNT_RETRY_MESSAGE, {'retry-after': String(Math.max(1, Math.ceil(waitMs / 1000)))});
+  return new UpstreamError(403, NO_ACCOUNT_ADMIN_MESSAGE);
+}
 
 const usageRepo = new UsageLogRepository();
 const settingsRepo = new SettingsRepository();
@@ -337,8 +349,14 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     if (siwcId === undefined) {
       const strategy = router_options?.strategy === undefined ? settingsRepo.getStrategy(provider) : router_options.strategy;
       if (!STRATEGIES.includes(strategy)) throw new UpstreamError(400, 'Invalid selection strategy');
-      const candidate = await accountPool.selectCandidate(user.id, model, provider, strategy, {excludeUpstream:excludedUpstream, excludeSiwc:excludedSiwc, credentialTypes:['oauth','api_key'], supportsGenerationOptions:parsed.generationOptions, includeSiwc:adapter.allowSiwc});
-      if (!candidate) throw new UpstreamError(503, 'No supported upstream account available');
+      const selectOptions = {excludeUpstream:excludedUpstream, excludeSiwc:excludedSiwc, credentialTypes:['oauth','api_key'] as CredentialType[], supportsGenerationOptions:parsed.generationOptions, includeSiwc:adapter.allowSiwc};
+      const candidate = await accountPool.selectCandidate(user.id, model, provider, strategy, selectOptions);
+      if (!candidate) {
+        // Explaining the outcome must never turn it into a different failure: fall back to the old 503.
+        let waitMs: number | null | undefined;
+        try { waitMs = accountPool.unavailableWaitMs(user.id, provider, selectOptions); } catch { waitMs = undefined; }
+        throw waitMs === undefined ? new UpstreamError(503, 'No supported upstream account available') : noAccountError(waitMs);
+      }
       if (candidate.kind === 'siwc') siwcId = candidate.id;
       else account = candidate.account;
     }

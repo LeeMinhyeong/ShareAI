@@ -212,7 +212,7 @@ test('messages: an API key that is not scoped to a workspace is marked and leave
   assert.equal(state(a.id).lastError, WORKSPACE_NOTICE);
   assert.equal((await admin('GET', '/admin/accounts')).json.accounts.find(x => x.id === a.id).lastError, WORKSPACE_NOTICE, 'the fixed notice is shown to the administrator');
   upstream(() => { throw new Error('must not dispatch'); });
-  assert.equal((await send('/v1/messages', msgBody, claudeHeaders)).status, 503);
+  assert.equal((await send('/v1/messages', msgBody, claudeHeaders)).status, 403, 'the only account needs an administrator (ADR 0019 item 8)');
   assert.equal(calls.length, 0);
   // Replacing the key and re-enabling in one request brings the account back.
   const scoped = key('usr', 'v');

@@ -26,7 +26,8 @@ async function exerciseManager() {
         "SELECT 1 FROM account_429_cooldowns WHERE kind='upstream' AND account_id=? AND until_at>?",
         'SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=?',
         'SELECT day, used, legacy_ambiguous FROM account_daily_reservations WHERE account_id=?',
-        'SELECT 1 FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?',
+        // ADR 0019 item 8: selection reads the restriction's duration to explain an empty pool.
+        'SELECT duration_ms FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?',
       ].includes(sql), `Unexpected query: ${sql}`);
       return { get: () => undefined };
     },

@@ -25,11 +25,11 @@ let handling;
 const app=express();app.use(express.json());app.post('/v1/chat/completions',authenticateUser,(req,res)=>{handling=forwardChat(req,res);});
 const server=app.listen(0,'127.0.0.1');await once(server,'listening');assert.notEqual(server.address().port,20128);
 const originalFetch=globalThis.fetch;
-function request(strategy='priority',key='fixture-key') {return new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port:server.address().port,path:'/v1/chat/completions',method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'}},res=>{let body='';res.on('data',x=>body+=x);res.on('end',()=>resolve({status:res.statusCode,body}));});req.on('error',reject);req.end(JSON.stringify({model:'gpt-5',messages:[{role:'user',content:'hello'}],router_options:{strategy}}));});}
+function request(strategy='priority',key='fixture-key') {return new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port:server.address().port,path:'/v1/chat/completions',method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'}},res=>{let body='';res.on('data',x=>body+=x);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body}));});req.on('error',reject);req.end(JSON.stringify({model:'gpt-5',messages:[{role:'user',content:'hello'}],router_options:{strategy}}));});}
 const create=(name,priority=0)=>repo.create({name,provider:'openai',credentialType:'api_key',credentials:`sk-${name}`,priority});
 after(async()=>{globalThis.fetch=originalFetch;await new Promise(r=>server.close(r));closeDatabase();rmSync(dir,{recursive:true,force:true});});
 
-test('authenticated request with all accounts cooling returns 503 without selecting or dispatching', {timeout:5000},async()=>{
+test('authenticated request with all accounts cooling returns 429 with Retry-After without selecting or dispatching (ADR 0019 item 8)', {timeout:5000},async()=>{
  const a=create('cool-a'),b=create('cool-b'); const clock=Date.now;const now=clock();Date.now=()=>now;
  let calls=0;globalThis.fetch=async()=>{calls++;return new Response('failure',{status:500});};
  try {
@@ -42,8 +42,9 @@ test('authenticated request with all accounts cooling returns 503 without select
   let admitted=0;
   for(const strategy of ['priority','least_used','round_robin']) {
    const response=await request(strategy);await handling;
-   assert.equal(response.status,503);
-   assert.deepEqual(JSON.parse(response.body),{error:{type:'upstream_error',message:'No supported upstream account available'}});
+   assert.equal(response.status,429);
+   assert.match(String(response.headers?.['retry-after']),/^[56]$/,'the remaining 5-6s backoff after one failure is announced');
+   assert.deepEqual(JSON.parse(response.body),{error:{type:'upstream_error',message:'All upstream accounts for this request are busy or resting. Retry shortly.'}});
    assert.equal(userRepo.getTodayUsageCount(user.id),initialUsage+(++admitted));
   }
   assert.equal(calls,0);

@@ -121,7 +121,8 @@ test('messages: Anthropic "credit balance is too low" marks the API-key account 
   // Leaves routing: with no other account the next request never reaches the provider.
   upstream(() => { throw new Error('exhausted account must not be dispatched'); });
   const next = await send('/v1/messages', msgBody, claudeHeaders);
-  assert.equal(next.status, 503);
+  assert.equal(next.status, 403, 'an exhausted account needs an administrator, so the client is told not to retry (ADR 0019 item 8)');
+  assert.equal(next.headers['retry-after'], undefined);
   assert.equal(calls.length, 0);
 });
 

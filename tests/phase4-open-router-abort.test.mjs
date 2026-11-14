@@ -87,7 +87,7 @@ if (!ISOLATED) {
         headers:{authorization:'Bearer fixture-key', 'content-type':'application/json'}}, res => {
         let text = '';
         res.on('data', chunk => { text += chunk; if (abort === 'first-chunk') { req.destroy(); resolve({aborted:true}); } });
-        res.on('end', () => resolve({status:res.statusCode, text}));
+        res.on('end', () => resolve({status:res.statusCode, headers:res.headers, text}));
         res.on('error', () => resolve({aborted:true}));
       });
       req.on('error', error => abort ? resolve({aborted:true}) : reject(error));
@@ -136,7 +136,8 @@ if (!ISOLATED) {
   const followUpBlocked = async a => {
     const before = calls.length;
     const r = await bounded(request({stream:false}), 3000, 'follow-up');
-    assert.equal(r.status, 503, 'restricted account is not selected');
+    assert.equal(r.status, 429, 'restricted account is not selected; the client is told to wait (ADR 0019 item 8)');
+    assert.equal(r.headers['retry-after'], '60', 'the 60s rest is announced');
     assert.equal(calls.length, before, 'follow-up must not reach the provider');
     assert.ok(restriction(a.id));
   };

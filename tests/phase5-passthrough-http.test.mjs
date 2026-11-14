@@ -210,10 +210,10 @@ test('messages: router errors use the Anthropic error envelope; OpenAI accounts 
   openaiKey('m-only-openai');
   upstream(() => { throw new Error('must not dispatch'); });
   const r = await send('/v1/messages', claudeBody, claudeHeaders);
-  assert.equal(r.status, 503);
+  assert.equal(r.status, 403, 'no Anthropic account: an administrator must act (ADR 0019 item 8)');
   const body = JSON.parse(r.text);
   assert.equal(body.type, 'error');
-  assert.equal(typeof body.error.type, 'string');
+  assert.equal(body.error.type, 'permission_error');
   assert.equal(typeof body.error.message, 'string');
   assert.equal(calls.length, 0);
 });
@@ -310,7 +310,7 @@ test('responses: router errors use the Responses error envelope; Anthropic accou
   anthropicKey('r-only-anthropic');
   upstream(() => { throw new Error('must not dispatch'); });
   const r = await send('/v1/responses', codexBody, codexHeaders);
-  assert.equal(r.status, 503);
+  assert.equal(r.status, 403, 'no OpenAI account: an administrator must act (ADR 0019 item 8)');
   const body = JSON.parse(r.text);
   assert.equal(typeof body.error.message, 'string');
   assert.equal(body.type, undefined);

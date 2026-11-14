@@ -14,7 +14,7 @@ function setup() {
   class UpstreamError extends Error { constructor(status, message) { super(message); this.status = status; } }
   const dependencies = {
     crypto: {randomUUID: () => 'synthetic'}, events: {once: () => { throw new Error('unexpected drain'); }},
-    '../account-pool/manager.js': {accountPool: {selectCandidate: async (_user, _model, _provider, strategy) => { selections.push(strategy); return null; }}},
+    '../account-pool/manager.js': {accountPool: {selectCandidate: async (_user, _model, _provider, strategy) => { selections.push(strategy); return null; }, unavailableWaitMs: () => null}},
     '../db/repositories/usage-logs.js': {UsageLogRepository: class {}},
     '../db/repositories/accounts.js': {RefreshIntentError: class extends Error {}},
     '../utils/logger.js': {logger: {error() {}}}, './tokens.js': {},
@@ -60,10 +60,10 @@ test('invalid explicit strategies are rejected before candidate selection', asyn
 
 test('each recognized strategy and an omitted strategy reach candidate selection', async () => {
   for (const strategy of ['priority', 'least_used', 'round_robin']) {
-    assert.deepEqual(await request({strategy}), {code:503, selections:[strategy]});
+    assert.deepEqual(await request({strategy}), {code:403, selections:[strategy]});
   }
-  assert.deepEqual(await request({}), {code:503, selections:['priority']});
-  assert.deepEqual(await request(undefined), {code:503, selections:['priority']});
+  assert.deepEqual(await request({}), {code:403, selections:['priority']});
+  assert.deepEqual(await request(undefined), {code:403, selections:['priority']});
 });
 
 test('explicit SIWC selection is validated without candidate selection', async () => {

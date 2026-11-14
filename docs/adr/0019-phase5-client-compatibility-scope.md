@@ -114,6 +114,24 @@ Phase 5의 목표는 Claude Code와 Codex CLI가 ShareAI를 실제로 쓸 수 �
 - 진단: 형식 불일치로 거부할 때는 서버 로그의 `upstream`에 응답의 상태 코드, content-type, content-encoding, content-length, 본문 유무를 남긴다. 스트림 검증이 실패할 때는 `upstreamStream`에 실패한 규칙 이름, 받은 바이트 수, 프레임 수, 본문 첫 글자의 종류(고정 라벨)를 남긴다. 본문·쿠키·자격증명은 남기지 않는다.
 - 확인: 수정 뒤 같은 구독의 새 계정으로 Codex CLI 0.167.2 요청 8건이 연속으로 성공했다(2026-11-13 15:12~15:14, 사용 기록 기준). 형식 없는 본문은 이벤트 스트림이었다.
 
+### 8. 쓸 수 있는 계정이 없을 때의 응답 (사용자 결정, 2026-11-14)
+
+- 문제: 계정을 고르지 못하면 이유와 상관없이 503을 보냈고, Claude 형식에서는 오류 종류가 `overloaded_error`였다. Claude Code는 과부하와 서버 오류를 최대 10번 재시도한 뒤 "Repeated 529 Overloaded errors. The API is at capacity"를 보여 준다(공식 오류 문서, 2026-11-14 조회). 실제 확인에서 크레딧 소진으로 계정이 빠졌을 때 사용자는 이 화면을 Anthropic 혼잡으로 읽었다.
+- 결정: 고를 수 있는 계정이 없으면, 이 요청이 쓸 수 있는 계정 중 가장 빨리 풀리는 시간을 계산한다.
+  - 그 시간이 5분 이하이면 **429**와 `Retry-After`(초, 최소 5)를 보낸다. 문구: `All upstream accounts for this request are busy or resting. Retry shortly.` Claude 형식의 오류 종류는 `rate_limit_error`다. Claude Code는 통합 한도 헤더가 없는 429를 "Server is temporarily limiting requests (not your usage limit)"로 보고 자동 재시도한다(같은 문서).
+  - 그 밖에는 **403**을 보낸다. 문구: `No upstream account can serve this request now. Contact the administrator.` 오류 종류는 `permission_error`다. 이 요청이 쓸 수 있는 계정이 없거나(없음, 꺼짐, `error`), 모두 무기한으로 막혔거나, 가장 짧은 대기도 5분을 넘는 경우다.
+  - 문구는 고정이고 계정 이름·개수·상태는 넣지 않는다(공유 사용자에게 풀 정보를 노출하지 않는다).
+- 대기 시간 계산(조언용이고 선택과 마찬가지로 경쟁이 있을 수 있다). 선택과 설명은 계정 하나를 판정하는 같은 규칙(일반 계정 `upstreamChecks`, SIWC `siwcChecks`)을 쓴다. 판정은 "지금 사용 가능 / 몇 ms 뒤 / 관리자 필요" 셋 중 하나이고, 선택은 "지금 사용 가능"만 고른다. 그래서 선택이 거르는 이유가 대기 계산에서 빠질 수 없다(리뷰 지적 반영):
+  - 다른 요청이 쓰는 중(OPEN), 이 요청 안에서 경쟁에 진 계정, Codex 토큰 갱신 중: 5초. 실제 끝나는 시각은 알 수 없다. 끝나지 않는 OPEN이나 갱신 표식도 같은 5초로 보인다.
+  - 429 v2 제한: 걸린 시간 전체. 이미 지난 시간은 여기서 추적하지 않으므로 실제보다 길게 말할 수 있다. 기간이 없는(무기한) 제한은 대기로 치지 않는다.
+  - 프로세스 안 연속 실패 backoff, `quota_exceeded`의 `resetAt`, SIWC 만료 토큰의 `earliestRefreshAt`: 남은 시간.
+  - 일일 할당량 소진, 레거시 이전으로 모호한 오늘 행, 최대값 행: 다음 UTC 자정까지(대개 5분을 넘어 403).
+  - 손상된 할당량 행(날짜 형식 오류, 미래 날짜, 잘못된 사용량)이나 잘못된 계정 할당량 설정: 관리자 필요(403).
+  - 한 계정에 여러 이유가 겹치면 가장 긴 것, 계정 사이에서는 가장 짧은 것.
+  - 이 요청이 절대 쓸 수 없는 계정(자격 형식 불일치, 생성 옵션을 못 받는 Codex 구독, 만료되고 갱신할 수 없는 토큰)은 세지 않는다. SIWC 계정은 사용자 접근 권한과 자격 상태를 같은 방식으로 본다.
+- 하지 않은 것: SIWC 계정을 직접 지정한 요청(`router_options.siwc_account_id`)의 503, 선택 뒤 발송 직전 상태가 바뀐 경우의 503(`AccountQuotaUnavailable`)은 그대로다.
+- 미확인: Claude Code와 Codex가 이 403을 재시도 없이 문구 그대로 보여 주는지, Codex가 이 429를 재시도하는지. 계정 없는 서버로 사용자가 화면을 확인한다. 기대와 다르면 상태 코드만 바꾼다.
+
 ## 완료 조건 (고정)
 
 1. **`/v1/messages`**: Anthropic API 키와 구독 OAuth 두 경우 모두 다음을 실제 서버 경로 테스트(합성 공급자)로 확인한다.

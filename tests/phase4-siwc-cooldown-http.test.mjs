@@ -37,7 +37,8 @@ after(async()=>{globalThis.fetch=originalFetch;await new Promise(r=>server.close
 test('SIWC provider failure cools automatic and explicit selection without leaking ACL', {timeout:5000},async()=>{
  let calls=0;globalThis.fetch=async()=>{calls++;return new Response('',{status:429});};
  assert.equal((await send()).status,429);
- for(const strategy of ['priority','least_used','round_robin']) {const response=await send({strategy});assert.equal(response.status,503);assert.doesNotMatch(response.body,/private-account/);assert.equal(response.headers['retry-after'],undefined);}
+ // ADR 0019 item 8: automatic selection announces the short wait; an explicit pin below keeps its 503.
+ for(const strategy of ['priority','least_used','round_robin']) {const response=await send({strategy});assert.equal(response.status,429);assert.doesNotMatch(response.body,/private-account/);assert.match(String(response.headers['retry-after']),/^[56]$/,'the local 5-6s backoff after one failure');}
  assert.equal((await send({siwc_account_id:'private-account'})).status,503);
  assert.equal((await send({siwc_account_id:'private-account'},'denied-key')).status,404);
  assert.equal(calls,1);
@@ -58,7 +59,7 @@ test('late 429 restricts the account despite credential replacement', {timeout:5
  finally {release();}
  assert.equal((await pending).status,429);
  let calls=0;globalThis.fetch=async (_url,opts)=>{calls++;assert.equal(opts.headers.authorization,'Bearer new-access');return new Response(responseStream,{headers:{'content-type':'text/event-stream'}});};
- assert.equal((await send()).status,503);assert.equal(calls,0);
+ assert.equal((await send()).status,429);assert.equal(calls,0);
  assert.ok(db.prepare("SELECT 1 FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id='private-account'").get(), 'v2 restriction armed');
 });
 // Wall-clock offset expires the local backoff; the shared v2 restriction expires on a monotonic
@@ -81,7 +82,7 @@ test('invalid fetch response reports local 502 and retains OPEN', {timeout:5000}
  // This is the router's 502, not a claimed upstream status: the mock is not a Response.
  assert.equal(db.prepare("SELECT status FROM siwc_usage_logs WHERE account_id=? ORDER BY rowid DESC LIMIT 1").get('private-account').status,502);
  assert.ok(db.prepare("SELECT 1 FROM siwc_account_attempts WHERE account_id='private-account'").get());
- assert.equal((await send()).status,503);
+ assert.equal((await send()).status,429);
 });
 test('an OPEN blocks the same SIWC but allows another account', {timeout:5000},async()=>{
  store.replace('private-account',{...credential,accessToken:'race-access'});
@@ -107,7 +108,7 @@ test('credential replacement cannot bypass OPEN and works after settlement', {ti
  let entered,release;const barrier=new Promise(r=>entered=r);const hold=new Promise(r=>release=r);
  let calls=0;globalThis.fetch=async()=>{if(++calls===1){entered();await hold;return new Response(responseStream,{headers:{'content-type':'text/event-stream'}});}return new Response('',{status:429});};
  const pending=send();
- try {await Promise.race([barrier,new Promise((_,reject)=>setTimeout(()=>reject(new Error('dispatch timed out')),2000))]);store.replace('private-account',{...credential,accessToken:'new-failure'});assert.equal((await send()).status,503);assert.equal(calls,1);} finally {release();}
+ try {await Promise.race([barrier,new Promise((_,reject)=>setTimeout(()=>reject(new Error('dispatch timed out')),2000))]);store.replace('private-account',{...credential,accessToken:'new-failure'});assert.equal((await send()).status,429);assert.equal(calls,1);} finally {release();}
  assert.equal((await pending).status,200);
  globalThis.fetch=async (_url,opts)=>{calls++;assert.equal(opts.headers.authorization,'Bearer new-failure');return new Response(responseStream,{headers:{'content-type':'text/event-stream'}});};
  assert.equal((await send()).status,200);assert.equal(calls,2);
@@ -136,7 +137,7 @@ test('non-retryable 4xx settles and invalid fetch objects retain OPEN', {timeout
   db.prepare("DELETE FROM siwc_account_attempts WHERE account_id='private-account'").run();
   store.replace('private-account',{...credential,accessToken:`invalid-${status}`});let calls=0;
   globalThis.fetch=async()=>{calls++;return {ok:false,status,headers:new Headers(),body:null};};
-  assert.equal((await send()).status,502);assert.ok(db.prepare("SELECT 1 FROM siwc_account_attempts WHERE account_id='private-account'").get());assert.equal((await send()).status,503);assert.equal(calls,1);
+  assert.equal((await send()).status,502);assert.ok(db.prepare("SELECT 1 FROM siwc_account_attempts WHERE account_id='private-account'").get());assert.equal((await send()).status,429);assert.equal(calls,1);
  }
 });
 test('local pre-dispatch validation failure does not cool SIWC', {timeout:5000},async()=>{
@@ -155,5 +156,5 @@ test('cancelled dispatched SIWC converts its OPEN into a 60s restriction (ADR 00
  // A router-abandoned dispatched attempt is no longer an indefinite OPEN: it becomes a finite shared restriction.
  assert.equal(db.prepare("SELECT 1 FROM siwc_account_attempts WHERE account_id='private-account'").get(),undefined,'OPEN converted');
  assert.equal(Number(db.prepare("SELECT duration_ms FROM account_429_v2_restrictions WHERE kind='siwc' AND account_id='private-account'").get()?.duration_ms),60000,'60s restriction');
- assert.equal((await send()).status,503);assert.equal(calls,1);
+ assert.equal((await send()).status,429);assert.equal(calls,1);
 });

@@ -35,6 +35,27 @@ interface RotationState {
 
 const repo = new AccountRepository();
 
+/** Wait hinted for an account busy with another request; its true end is unknown (ADR 0019 item 8). */
+export const BUSY_WAIT_MS = 5_000;
+
+/**
+ * Remaining wait implied by a shared 429 v2 restriction: its full duration, Infinity when indefinite.
+ * Any row still blocks selection (as `SELECT 1` did), so a zero duration counts as 1 ms.
+ */
+function restrictionWait(statement: {get(...args: unknown[]): unknown}, kind: 'upstream' | 'siwc', id: string): number {
+  // A plain number is enough: the value only chooses between a hint and "contact the administrator".
+  const row = statement.get(kind, id) as {duration_ms: number | bigint | null} | undefined;
+  return !row ? 0 : row.duration_ms === null ? Infinity : Math.max(1, Number(row.duration_ms));
+}
+
+/** A malformed input (NaN) must neither select the account nor poison the shortest wait. */
+const settledWait = (wait: number): number => Number.isNaN(wait) ? Infinity : wait;
+
+// The SIWC accounts a user may be routed to; shared by selection and its explanation.
+const SIWC_ACL_FROM = 'siwc_accounts a JOIN siwc_credentials c ON c.id=a.id JOIN siwc_access_policy p ON p.account_id=a.id';
+const SIWC_ACL_WHERE = `JOIN users u ON u.id=? AND u.enabled=1 WHERE p.enabled=1 AND (p.scope='all' OR (p.scope='selected' AND EXISTS
+      (SELECT 1 FROM siwc_access_users g WHERE g.account_id=a.id AND g.user_id=u.id)))`;
+
 export class AccountPoolManager {
   constructor(private readonly successClock: () => number = Date.now) {}
 
@@ -119,14 +140,30 @@ export class AccountPoolManager {
 
   private eligibleUpstream(provider: string, opts: SelectOptions): UpstreamAccount[] {
     const now = Date.now();
+    const check = this.upstreamChecks(provider, opts, now);
+    const all = repo.findActiveByProvider(provider).filter(acc => check(acc) === 0);
+    // Redundant with the check's observedCooldown, kept so state() still (re)creates rotation state
+    // for exactly the accounts it did before ADR 0019 item 8.
+    return all.filter(a => this.state(a.id, a.stateRevision).cooldownUntil <= now);
+  }
+
+  /**
+   * One rule set for selection and for explaining an empty selection (ADR 0019 item 8): for each
+   * account, 0 when it is usable now, otherwise the milliseconds until it may be, Infinity when
+   * only an administrator (or a new day's repair) can bring it back. Several reasons: the longest.
+   */
+  private upstreamChecks(provider: string, opts: SelectOptions, now: number): (acc: UpstreamAccount) => number {
     const db = getDb();
     // Staged integration only: settlement/startup must be wired before deployment.
     assert429V2Schema(db);
-    const restricted = db.prepare('SELECT 1 FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?');
-    const all = repo.findActiveByProvider(provider).filter(acc => {
-      if (opts.exclude?.has(acc.id) || opts.excludeUpstream?.has(acc.id)) return false;
-      if (opts.credentialTypes && !opts.credentialTypes.includes(acc.credentialType)) return false;
-      if (provider === 'openai' && opts.supportsGenerationOptions && acc.credentialType === 'oauth') return false;
+    const restriction = db.prepare('SELECT duration_ms FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?');
+    const open = db.prepare('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=?');
+    const reservation = db.prepare('SELECT day, used, legacy_ambiguous FROM account_daily_reservations WHERE account_id=?');
+    const day = new Date(now).toISOString().slice(0,10);
+    const nextUtcMidnight = Date.parse(`${day}T00:00:00Z`) + 86_400_000;
+    return acc => {
+      if (opts.credentialTypes && !opts.credentialTypes.includes(acc.credentialType)) return Infinity;
+      if (provider === 'openai' && opts.supportsGenerationOptions && acc.credentialType === 'oauth') return Infinity;
       if (provider === 'anthropic' && acc.credentialType === 'oauth') {
         const creds = parseStoredCredentials(acc.credentials);
         if (creds) {
@@ -134,40 +171,110 @@ export class AccountPoolManager {
           // Conservative for normal resolution: an existing or forced refresh can
           // still recover a falsey expiry, but that state is not available here.
           const willRefresh = !!creds.refreshToken && !!creds.expiresAt;
-          if (expired && !willRefresh) return false;
+          if (expired && !willRefresh) return Infinity;
         }
       }
       if (provider === 'openai' && acc.credentialType === 'oauth') {
         const creds = parseStoredCredentials(acc.credentials);
-        if (!creds) return false;
+        if (!creds) return Infinity;
         const exp = decodeJwt(creds.accessToken)?.exp;
         const jwtExpired = typeof exp === 'number' && Number.isFinite(exp) && exp * 1000 <= now;
         const expired = (creds.expiresAt != null && creds.expiresAt <= now) || jwtExpired;
         const refreshable = typeof creds.refreshToken === 'string' && !!creds.refreshToken.trim();
-        if (typeof creds.refreshToken === 'string' && creds.refreshToken && repo.hasRefreshIntent(provider, creds.refreshToken)) return false;
         const willRefresh = refreshable && (jwtExpired || (!!creds.expiresAt && creds.expiresAt - now < 5 * 60 * 1000));
-        if (expired && !willRefresh) return false;
-        if (!willRefresh && !/^[A-Za-z0-9._~+/-]+=*$/.test(creds.accessToken)) return false;
+        if (expired && !willRefresh) return Infinity;
+        if (!willRefresh && !/^[A-Za-z0-9._~+/-]+=*$/.test(creds.accessToken)) return Infinity;
         if ((typeof creds.accountId !== 'string' || !creds.accountId.trim() || /[\x00-\x1f\x7f]/.test(creds.accountId)) &&
-            !(willRefresh && (creds.accountId == null || creds.accountId === ''))) return false;
+            !(willRefresh && (creds.accountId == null || creds.accountId === ''))) return Infinity;
       }
+      let wait = 0;
+      // Excluded earlier in this request after losing a race for it: the winner's request ends soon.
+      if (opts.exclude?.has(acc.id) || opts.excludeUpstream?.has(acc.id)) wait = BUSY_WAIT_MS;
+      // A Codex refresh in flight or with an uncertain outcome.
+      if (this.refreshInFlight(provider, acc)) wait = Math.max(wait, BUSY_WAIT_MS);
       // Shared cooldown is advisory here; the dispatch fence rechecks under the writer.
-      if (restricted.get('upstream', acc.id)) return false;
-      if (getDb().prepare('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=?').get(acc.id)) return false;
+      wait = Math.max(wait, restrictionWait(restriction, 'upstream', acc.id));
+      if (open.get(acc.id)) wait = Math.max(wait, BUSY_WAIT_MS);
       // Advisory filtering permits fallback to another account; the claim still decides atomically.
-      const quota = getDb().prepare('SELECT day, used, legacy_ambiguous FROM account_daily_reservations WHERE account_id=?').get(acc.id) as {day:string; used:number; legacy_ambiguous:number} | undefined;
-      const day = new Date().toISOString().slice(0,10);
-      if (!Number.isSafeInteger(acc.dailyQuota) || acc.dailyQuota < 0) return false;
-      if (quota && (!/^\d{4}-\d{2}-\d{2}$/.test(quota.day) || Number.isNaN(Date.parse(`${quota.day}T00:00:00Z`)) || new Date(`${quota.day}T00:00:00Z`).toISOString().slice(0,10) !== quota.day || quota.day > day || !Number.isSafeInteger(quota.used) || quota.used < 0 || ![0,1].includes(quota.legacy_ambiguous))) return false;
-      if (quota?.day === day && (quota.used === Number.MAX_SAFE_INTEGER || (acc.dailyQuota > 0 && (quota.legacy_ambiguous || quota.used >= acc.dailyQuota)))) return false;
+      const quota = reservation.get(acc.id) as {day:string; used:number; legacy_ambiguous:number} | undefined;
+      if (!Number.isSafeInteger(acc.dailyQuota) || acc.dailyQuota < 0) return Infinity;
+      if (quota && (!/^\d{4}-\d{2}-\d{2}$/.test(quota.day) || Number.isNaN(Date.parse(`${quota.day}T00:00:00Z`)) || new Date(`${quota.day}T00:00:00Z`).toISOString().slice(0,10) !== quota.day || quota.day > day || !Number.isSafeInteger(quota.used) || quota.used < 0 || ![0,1].includes(quota.legacy_ambiguous))) return Infinity;
+      // These clear when the UTC day changes.
+      if (quota?.day === day && (quota.used === Number.MAX_SAFE_INTEGER || (acc.dailyQuota > 0 && (quota.legacy_ambiguous || quota.used >= acc.dailyQuota)))) wait = Math.max(wait, nextUtcMidnight - now);
       if (acc.status === 'quota_exceeded') {
         const resetAt = acc.quotaInfo?.resetAt;
-        if (resetAt && resetAt > now) return false;
+        if (resetAt && resetAt > now) wait = Math.max(wait, resetAt - now);
       }
-      return true;
-    });
+      wait = Math.max(wait, this.observedCooldown(acc.id, acc.stateRevision) - now);
+      return settledWait(wait);
+    };
+  }
 
-    return all.filter(a => this.state(a.id, a.stateRevision).cooldownUntil <= now);
+  /** A Codex refresh for this account is in flight or its outcome is uncertain. */
+  private refreshInFlight(provider: string, acc: UpstreamAccount): boolean {
+    if (provider !== 'openai' || acc.credentialType !== 'oauth') return false;
+    const creds = parseStoredCredentials(acc.credentials);
+    return !!creds && typeof creds.refreshToken === 'string' && !!creds.refreshToken && repo.hasRefreshIntent(provider, creds.refreshToken);
+  }
+
+  /** Whether automatic selection considers SIWC accounts for this request. */
+  private siwcConsidered(db: ReturnType<typeof getDb>, provider: string, opts: SelectOptions): boolean {
+    if (provider !== 'openai' || opts.includeSiwc === false || opts.supportsGenerationOptions || (opts.credentialTypes && !opts.credentialTypes.includes('oauth'))) return false;
+    return (db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('siwc_accounts','siwc_credentials')").get() as {n:number}).n === 2;
+  }
+
+  /** SIWC counterpart of upstreamChecks, for an account the user's ACL already admits. */
+  private siwcChecks(opts: SelectOptions, now: number): (id: string) => number {
+    const db = getDb();
+    const restriction = db.prepare('SELECT duration_ms FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?');
+    const open = db.prepare('SELECT 1 FROM main.siwc_account_attempts WHERE account_id=?');
+    let store: SiwcStore | undefined;
+    return id => {
+      let snapshot, credential, expired;
+      try {
+        // Created on first use, so a request with no SIWC rows never needs the vault.
+        store ??= new SiwcStore(db, new CredentialVault(), { initialize: false });
+        snapshot = store.readSnapshot(id);
+        credential = snapshot?.credential;
+        if (!snapshot || !credential || !credential.scopes.includes('chatgpt.tokens.use.direct')) return Infinity;
+        expired = Date.parse(credential.savedAt) + credential.expiresIn * 1000 <= now;
+        if (expired && !(credential.refreshToken && credential.scopes.includes('offline_access'))) return Infinity;
+      } catch { return Infinity; }
+      let wait = opts.exclude?.has(id) || opts.excludeSiwc?.has(id) ? BUSY_WAIT_MS : 0;
+      wait = Math.max(wait, restrictionWait(restriction, 'siwc', id));
+      if (open.get(id)) wait = Math.max(wait, BUSY_WAIT_MS);
+      const state = this.siwcStates.get(id);
+      if (state && state.revision === snapshot.revision) wait = Math.max(wait, state.cooldownUntil - now);
+      if (expired) {
+        if (credential.earliestRefreshAt !== undefined) wait = Math.max(wait, credential.earliestRefreshAt * 1000 - now);
+        // As before this change, a failing refresh-intent read hides the account instead of failing selection.
+        try { if (repo.hasRefreshIntent('openai', credential.refreshToken!)) wait = Math.max(wait, BUSY_WAIT_MS); } catch { return Infinity; }
+      }
+      return settledWait(wait);
+    };
+  }
+
+  /**
+   * Why selection found nothing (ADR 0019 item 8): the shortest wait in milliseconds after which an
+   * account this request could use may be free again, or null when none can return without an
+   * administrator (no usable account, or every one blocked indefinitely). Advisory, like selection.
+   * A finite restriction counts its full duration because the time already served is not tracked here.
+   */
+  unavailableWaitMs(userId: string, provider: string, opts: SelectOptions = {}): number | null {
+    const now = Date.now();
+    const db = getDb();
+    const check = this.upstreamChecks(provider, opts, now);
+    // A wait of 0 means it became usable after selection ran: retrying soon is the right answer.
+    const waits = repo.findActiveByProvider(provider).map(acc => check(acc)).map(w => w === 0 ? BUSY_WAIT_MS : w);
+    if (this.siwcConsidered(db, provider, opts)) {
+      const siwc = this.siwcChecks(opts, now);
+      for (const {id} of db.prepare(`SELECT a.id FROM ${SIWC_ACL_FROM} ${SIWC_ACL_WHERE}`).all(userId) as {id:string}[]) {
+        const w = siwc(id);
+        waits.push(w === 0 ? BUSY_WAIT_MS : w);
+      }
+    }
+    const shortest = Math.min(...waits);
+    return Number.isFinite(shortest) ? shortest : null;
   }
 
   private order<T extends {priority: number; usedToday: number; weight: number}>(provider: string, pool: T[], strategy: SelectionStrategy, keyOf: (a: T) => string): T[] {
@@ -182,33 +289,16 @@ export class AccountPoolManager {
   async selectCandidate(userId: string, model: string, provider: string, strategy: SelectionStrategy, opts: SelectOptions = {}): Promise<PoolCandidate | null> {
     const db = getDb();
     assert429V2Schema(db);
-    const restricted = db.prepare('SELECT 1 FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?');
-    const exists = provider === 'openai' && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('siwc_accounts','siwc_credentials')").get() as {n:number} | false;
     // Round robin exposes the legacy local-midnight count on its returned candidate.
     // UTC-ranked strategies replace it below, so avoid the correlated count entirely.
     const legacyCount = strategy === 'round_robin';
     const countExpression = legacyCount ? '(SELECT COUNT(*) FROM siwc_usage_logs l WHERE l.account_id=a.id AND l.success=1 AND l.timestamp>=?)' : '0';
-    let siwc = exists && exists.n === 2 && opts.includeSiwc !== false && !opts.supportsGenerationOptions && (!opts.credentialTypes || opts.credentialTypes.includes('oauth')) ? db.prepare(`SELECT a.id, COALESCE(r.priority,0) AS priority, COALESCE(r.weight,1) AS weight, ${countExpression} AS usedToday
-      FROM siwc_accounts a JOIN siwc_credentials c ON c.id=a.id JOIN siwc_access_policy p ON p.account_id=a.id LEFT JOIN siwc_routing_settings r ON r.account_id=a.id
-      JOIN users u ON u.id=? AND u.enabled=1 WHERE p.enabled=1 AND (p.scope='all' OR (p.scope='selected' AND EXISTS
-      (SELECT 1 FROM siwc_access_users g WHERE g.account_id=a.id AND g.user_id=u.id))) ORDER BY a.id`).all(...(legacyCount ? [new Date(new Date().setHours(0,0,0,0)).toISOString(), userId] : [userId])) as {id:string;priority:number;weight:number;usedToday:number}[] : [];
+    let siwc = this.siwcConsidered(db, provider, opts) ? db.prepare(`SELECT a.id, COALESCE(r.priority,0) AS priority, COALESCE(r.weight,1) AS weight, ${countExpression} AS usedToday
+      FROM ${SIWC_ACL_FROM} LEFT JOIN siwc_routing_settings r ON r.account_id=a.id
+      ${SIWC_ACL_WHERE} ORDER BY a.id`).all(...(legacyCount ? [new Date(new Date().setHours(0,0,0,0)).toISOString(), userId] : [userId])) as {id:string;priority:number;weight:number;usedToday:number}[] : [];
     if (siwc.length) {
-      const store = new SiwcStore(db, new CredentialVault(), { initialize: false });
-      siwc = siwc.filter(({id}) => {
-        if (opts.exclude?.has(id) || opts.excludeSiwc?.has(id)) return false;
-        if (restricted.get('siwc', id)) return false;
-        if (db.prepare('SELECT 1 FROM main.siwc_account_attempts WHERE account_id=?').get(id)) return false;
-        try {
-          const snapshot = store.readSnapshot(id);
-          const credential = snapshot?.credential;
-          if (!snapshot || this.siwcCooling(id, snapshot.revision) || !credential || !credential.scopes.includes('chatgpt.tokens.use.direct')) return false;
-          const expired = Date.parse(credential.savedAt) + credential.expiresIn * 1000 <= Date.now();
-          if (!expired) return true;
-          return !!credential.refreshToken && credential.scopes.includes('offline_access')
-            && (credential.earliestRefreshAt === undefined || credential.earliestRefreshAt * 1000 <= Date.now())
-            && !repo.hasRefreshIntent('openai', credential.refreshToken);
-        } catch { return false; }
-      });
+      const check = this.siwcChecks(opts, Date.now());
+      siwc = siwc.filter(({id}) => check(id) === 0);
     }
     if (!siwc.length) {
       if (strategy === 'least_used' || strategy === 'priority') {
