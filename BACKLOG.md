@@ -219,7 +219,7 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 
 ## Phase 5 이후 추가 개발 (2026-11-10, 사용자 결정, ADR 0019)
 
-- **교차 공급자 변환(1B):** Claude Code(`/v1/messages`)로 OpenAI 계정, Codex(`/v1/responses`)로 Anthropic 계정 사용. Phase 5 완료 후 별도 ADR로 손실 범위(thinking 서명, 도구 형식, 캐시)와 완료 조건을 정하고 진행한다. → **2026-11-15 1단계(Claude Code → OpenAI) 구현, [ADR 0022](docs/adr/0022-cross-provider-messages-to-openai.md). Codex → Anthropic은 남음.**
+- **교차 공급자 변환(1B):** Claude Code(`/v1/messages`)로 OpenAI 계정, Codex(`/v1/responses`)로 Anthropic 계정 사용. Phase 5 완료 후 별도 ADR로 손실 범위(thinking 서명, 도구 형식, 캐시)와 완료 조건을 정하고 진행한다. → **2026-11-15 1단계(Claude Code → OpenAI) 구현, [ADR 0022](docs/adr/0022-cross-provider-messages-to-openai.md). Codex → Anthropic은 2026-11-15 2단계로 구현, [ADR 0023](docs/adr/0023-cross-provider-responses-to-anthropic.md).**
 - `/v1/messages/count_tokens`, `/v1/models` 탐색, Codex WebSocket·원격 압축, SIWC 계정의 새 엔드포인트 사용, 10MB 초과 본문.
 
 ## Phase 5 1차 리뷰 잔여 (2026-11-10, deleg_aec37528)
@@ -291,3 +291,13 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 - `/v1/messages/count_tokens`는 라우터에 없다(Claude·GPT 모두).
 - 비추론 모델(gpt-4.1, gpt-4o)은 Claude Code가 thinking 설정을 보내면 `reasoning`이 붙어 거부될 수 있다.
 - ping은 공급자에게서 프레임이 올 때만 검사한다. 공급자가 완전히 조용하면 클라이언트도 조용하다(프레임과 무관한 타이머 방식 검토).
+
+## ADR 0023 남은 일 (2026-11-15)
+
+- 실제 확인(사용자): Codex에서 Claude 구독 계정으로 파일 읽기와 `apply_patch` 수정이 여러 턴 이어지는지. Codex가 추론 항목의 `encrypted_content`를 돌려보내는지, 구독이 adaptive·effort 형식과 비-Claude Code 도구 구성을 받는지, 도구 이름 접두사가 필요한지(결정 5).
+- Codex가 모르는 모델 이름(claude-*)에 보내는 도구 구성과 지시문을 실제로 기록해 회귀 테스트로 추가.
+- `local_shell`·`web_search` 등 호스팅 도구 정의는 버린다. Codex가 이 도구에만 기대면 Claude 모델은 그 기능을 못 쓴다.
+- Anthropic이 JSON(비스트림)으로 답하면 502로 끝낸다(스트림을 요청하므로 드묾).
+- 자유형식 도구 입력은 블록이 끝날 때 한 번에 보낸다. 큰 `apply_patch` 생성 중 Codex 무응답 시간 초과 위험이 있으면 부분 JSON을 점진적으로 풀어 델타로 보낸다.
+- 서명 거부 400이면 thinking을 떼고 한 번 재시도하는 회복 경로는 없다(지금은 모델이 다른 봉투를 버리고, thinking 없는 이어 가기 턴만 thinking을 끈다).
+- `tests/phase4-siwc-vertical.test.mjs`는 가끔 `barrier timeout`으로 실패한다(2026-11-15 확인: ADR 0023 이전 커밋에서도 9회 중 1회).
