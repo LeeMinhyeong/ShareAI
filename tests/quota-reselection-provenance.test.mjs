@@ -16,7 +16,7 @@ function fixture(mode, fault = {}) {
   let quota;
   const usedByAccount = {a:['exhausted','commit','rollback','cancel','cancel-after-commit','lost-ack','refresh'].includes(mode) ? 1 : 0,b:0};
   const db = {prepare(sql) {
-    if (sql.includes('SELECT status, state_revision')) return {get: () => ({status:'active',state_revision:1,credential_revision:1,daily_quota:1})};
+    if (sql.includes('SELECT status, state_revision')) return {get: () => ({status:'active',state_revision:1,credential_revision:1,daily_quota:1,max_concurrency:1})}; // ADR 0021: the fence reads the limit
     if (sql.includes('account_429_cooldowns')) return {get: id => mode === 'cooldown' && id === 'a' ? 1 : undefined};
     // The admission cooldown is the v2 restriction (ADR 0008); 'cooldown' mode restricts A there.
     if (sql.includes('account_429_v2_restrictions')) return {get: (kind, id) => mode === 'cooldown' && kind === 'upstream' && id === 'a' ? 1 : undefined, run: () => ({changes:1})};

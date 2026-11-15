@@ -109,7 +109,7 @@ test('mixed candidate admission races stop after 16 total candidates', {timeout:
  accountPool.selectCandidate=async (_u,_m,_p,_s,opts)=>{
   const candidate=candidates[selections++];assert.ok(candidate);assert.equal(opts.excludeUpstream.size+opts.excludeSiwc.size,selections-1);
   const table=candidate.kind==='siwc'?'siwc_account_attempts':'ordinary_account_attempts';
-  const script=`const D=require('better-sqlite3');const db=new D(process.argv[1]);db.prepare('INSERT INTO ${table}(account_id,attempt_id) VALUES (?,?)').run(process.argv[2],'other');db.close()`;
+  const script=`const D=require('better-sqlite3');const db=new D(process.argv[1]);db.prepare('INSERT INTO ${table}(account_id,attempt_id) VALUES (?,?)').run(process.argv[2],'other-'+process.argv[2]);db.close()`; // ADR 0021: attempt ids are unique
   const child=spawnSync(process.execPath,['-e',script,file,candidate.id],{encoding:'utf8',timeout:10000});assert.equal(child.status,0,child.stderr);
   return candidate;
  };

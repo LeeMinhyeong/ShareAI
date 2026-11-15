@@ -64,7 +64,7 @@ test('fresh preprovisioning enables actual isolated client startup', () => {
     assert.equal(f.actual.validateOrdinaryProvisioning(f.db),true);
     assert.equal(f.actual.validateSiwcProvisioning(f.db),true);
     assert.equal(v2.assert429V2Schema(f.db),0n);
-    assert.deepEqual(f.db.prepare('SELECT * FROM ordinary_attempts_schema_marker').all(),[{id:1,version:1}]);
+    assert.deepEqual(f.db.prepare('SELECT * FROM ordinary_attempts_schema_marker').all(),[{id:1,version:2}]); // ADR 0021
     assert.deepEqual(f.db.prepare('SELECT * FROM siwc_attempts_schema_marker').all(),[{id:1,version:1}]);
     assert.equal(f.closeCount,1);
     assert.equal(f.db.prepare("SELECT 1 FROM main.sqlite_schema WHERE name='usage_logs'").get(),undefined);

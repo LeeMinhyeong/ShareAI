@@ -102,6 +102,7 @@ export class AccountRepository {
     dailyQuota?: number;
     priority?: number;
     weight?: number;
+    maxConcurrency?: number;
   }): UpstreamAccount {
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -113,9 +114,9 @@ export class AccountRepository {
         id, name, provider, credential_type, credentials, meta, quota_info,
         status, last_used, last_error,
         daily_quota, used_today, quota_reset_at,
-        priority, weight,
+        priority, weight, max_concurrency,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'active', NULL, NULL, ?, 0, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'active', NULL, NULL, ?, 0, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       data.name,
@@ -127,6 +128,7 @@ export class AccountRepository {
       tomorrow.toISOString(),
       data.priority ?? 0,
       data.weight ?? 1,
+      data.maxConcurrency ?? 1,
       now,
       now
     );
@@ -139,7 +141,7 @@ export class AccountRepository {
     data: Partial<
       Pick<
         UpstreamAccount,
-        'name' | 'status' | 'lastError' | 'dailyQuota' | 'priority' | 'weight' | 'credentials' | 'credentialType' | 'meta'
+        'name' | 'status' | 'lastError' | 'dailyQuota' | 'priority' | 'weight' | 'maxConcurrency' | 'credentials' | 'credentialType' | 'meta'
       >
     >
   ): void {
@@ -156,6 +158,7 @@ export class AccountRepository {
     if (data.dailyQuota !== undefined) set('daily_quota', data.dailyQuota);
     if (data.priority !== undefined) set('priority', data.priority);
     if (data.weight !== undefined) set('weight', data.weight);
+    if (data.maxConcurrency !== undefined) set('max_concurrency', data.maxConcurrency);
     if (data.credentialType !== undefined) set('credential_type', data.credentialType);
     if (data.credentials !== undefined && data.credentials !== '') set('credentials', vault.encrypt(data.credentials));
     // Administrative credential replacement is a new generation even if the
@@ -349,6 +352,7 @@ export class AccountRepository {
       quotaResetAt: new Date(row.quota_reset_at),
       priority: row.priority,
       weight: row.weight,
+      maxConcurrency: row.max_concurrency,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
     };

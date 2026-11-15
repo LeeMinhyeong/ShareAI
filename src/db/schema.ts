@@ -39,6 +39,7 @@ export interface UpstreamAccount {
   // 선택 우선순위
   priority: number;  // 낮을수록 우선 (0=최우선)
   weight: number;    // 라운드로빈 가중치
+  maxConcurrency: number; // 동시 요청 한도 (ADR 0021, 1~16)
   
   createdAt: Date;
   updatedAt: Date;
@@ -132,6 +133,8 @@ CREATE TABLE IF NOT EXISTS upstream_accounts (
   
   priority INTEGER NOT NULL DEFAULT 0,
   weight INTEGER NOT NULL DEFAULT 1,
+  -- ADR 0021: requests this account may have in flight at once.
+  max_concurrency INTEGER NOT NULL DEFAULT 1 CHECK (typeof(max_concurrency) = 'integer' AND max_concurrency BETWEEN 1 AND 16),
   
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

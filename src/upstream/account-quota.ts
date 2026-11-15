@@ -34,8 +34,9 @@ function quotaOperations(account: UpstreamAccount, signal: AbortSignal) {
     return !!db.prepare('SELECT 1 FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?').get('upstream', account.id);
   };
   const validate = (db: import('better-sqlite3').Database, checkCooldown = true) => {
-    const a = db.prepare('SELECT status, state_revision, credential_revision, daily_quota FROM upstream_accounts WHERE id=?').get(account.id) as any;
-    if (!a || !['active','quota_exceeded'].includes(a.status) || a.state_revision !== account.stateRevision || a.credential_revision !== account.credentialRevision || !Number.isSafeInteger(a.daily_quota) || a.daily_quota < 0) throw new AccountQuotaUnavailable();
+    const a = db.prepare('SELECT status, state_revision, credential_revision, daily_quota, max_concurrency FROM upstream_accounts WHERE id=?').get(account.id) as any;
+    if (!a || !['active','quota_exceeded'].includes(a.status) || a.state_revision !== account.stateRevision || a.credential_revision !== account.credentialRevision || !Number.isSafeInteger(a.daily_quota) || a.daily_quota < 0
+        || !Number.isSafeInteger(a.max_concurrency) || a.max_concurrency < 1 || a.max_concurrency > 16) throw new AccountQuotaUnavailable();
     if (checkCooldown && cooling(db)) throw new AccountQuotaUnavailable();
     return a;
   };
@@ -85,11 +86,13 @@ export async function invokeAccountAttempt(account: UpstreamAccount, signal: Abo
 
   let day: string | null | false | typeof exhausted;
   try { day = await withAsyncWriter(db => {
-    validate(db, false); validateAuth(db); signal.throwIfAborted();
+    const current = validate(db, false); validateAuth(db); signal.throwIfAborted();
     // Return, rather than throw, so only a confirmed successful commit of this
     // read-only branch can authorize reselection. Commit errors fail closed.
     if (cooling(db)) return null;
-    if (db.prepare('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=?').get(account.id)) return false;
+    // ADR 0021: the limit read under this writer decides, never the caller's account snapshot.
+    // A row at offset max_concurrency-1 means every slot is already taken.
+    if (db.prepare('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=? LIMIT 1 OFFSET ?').get(account.id, current.max_concurrency - 1)) return false;
     // Exhaustion must be detected before any write. Only publish the retryable
     // outcome after this read-only transaction has committed successfully.
     const reservationDay = reserve(db);

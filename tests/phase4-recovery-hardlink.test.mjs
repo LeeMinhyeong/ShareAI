@@ -38,13 +38,14 @@ test('offline recovery rejects a hard-linked DB and preserves both fences and re
   }
   try{
     let db=open(file,{});
-    db.exec(`CREATE TABLE ordinary_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL);
-      CREATE TABLE ordinary_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));
+    // ADR 0021 ordinary fence layout: keyed by attempt, marker version 2.
+    db.exec(`CREATE TABLE ordinary_account_attempts (account_id TEXT NOT NULL, attempt_id TEXT NOT NULL PRIMARY KEY);
+      CREATE TABLE ordinary_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=2));
       CREATE TABLE siwc_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL);
       CREATE TABLE siwc_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));
       CREATE TABLE account_429_cooldowns (kind TEXT,account_id TEXT,until_at INTEGER);
       CREATE TABLE account_429_v2_restrictions (kind TEXT,account_id TEXT,generation INTEGER,duration_ms INTEGER);
-      INSERT INTO ordinary_attempts_schema_marker VALUES(1,1);INSERT INTO siwc_attempts_schema_marker VALUES(1,1);
+      INSERT INTO ordinary_attempts_schema_marker VALUES(1,2);INSERT INTO siwc_attempts_schema_marker VALUES(1,1);
       INSERT INTO ordinary_account_attempts VALUES('a','${attempt}');INSERT INTO siwc_account_attempts VALUES('s','${attempt}');
       INSERT INTO account_429_cooldowns VALUES('upstream','a',123);INSERT INTO account_429_v2_restrictions VALUES('upstream','a',1,6000);`);
     close(db);

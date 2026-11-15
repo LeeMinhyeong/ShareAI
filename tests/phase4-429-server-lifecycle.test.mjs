@@ -74,9 +74,10 @@ test('listener error retains database through pending scheduler drain', async()=
 
 function clientFixture(corrupt=false, valid=false, invalidateBeforeWriter=false) {
   const db=new Database(':memory:');
-  db.exec(`CREATE TABLE ordinary_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL);
-    CREATE TABLE ordinary_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));
-    INSERT INTO ordinary_attempts_schema_marker VALUES (1,1);
+  // ADR 0021 layout: ordinary attempts keyed by attempt, marker version 2.
+  db.exec(`CREATE TABLE ordinary_account_attempts (account_id TEXT NOT NULL, attempt_id TEXT NOT NULL PRIMARY KEY);
+    CREATE TABLE ordinary_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=2));
+    INSERT INTO ordinary_attempts_schema_marker VALUES (1,2);
     CREATE TABLE siwc_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL);
     CREATE TABLE siwc_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));
     INSERT INTO siwc_attempts_schema_marker VALUES (1,1);

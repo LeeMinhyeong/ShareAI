@@ -41,9 +41,10 @@ export function routingSnapshot() {
   } catch { /* fail closed below */ }
   type State = 'open'|'restricted'|'cooldown_until'|'no_known_block'|'unavailable'|'unknown';
   const rows: {kind:'upstream'|'siwc';id:string;state:State;cooldown_until?:number}[] = [];
-  function add(kind:'upstream'|'siwc', id:string, state:State, localUntil:number) {
+  function add(kind:'upstream'|'siwc', id:string, state:State, localUntil:number, slots = 1) {
     const table = kind === 'upstream' ? 'ordinary_account_attempts' : 'siwc_account_attempts';
-    if (db.prepare(`SELECT 1 FROM main.${table} WHERE account_id=?`).get(id)) { rows.push({kind,id,state:'open'}); return; }
+    // ADR 0021: an ordinary account is open only when all of its slots are taken.
+    if (db.prepare(`SELECT 1 FROM main.${table} WHERE account_id=? LIMIT 1 OFFSET ?`).get(id, slots - 1)) { rows.push({kind,id,state:'open'}); return; }
     if (!restrictions) { rows.push({kind,id,state:'unknown'}); return; }
     if (restrictions.has(JSON.stringify([kind,id]))) { rows.push({kind,id,state:'restricted'}); return; }
     if (!Number.isFinite(localUntil) || localUntil < 0 || localUntil > 8640000000000000) { rows.push({kind,id,state:'unknown'}); return; }
@@ -58,7 +59,7 @@ export function routingSnapshot() {
     let state: State = candidates.has(a.id) ? 'no_known_block' : 'unavailable';
     if (!Number.isSafeInteger(a.dailyQuota) || a.dailyQuota < 0 || (quota && (!validDay(quota.day) || !Number.isSafeInteger(quota.used) || (quota.used as number) < 0 || ![0,1].includes(quota.legacy_ambiguous as number)))) state = 'unknown';
     else if (quota && quota.day === day && ((quota.used as number) >= Number.MAX_SAFE_INTEGER || (a.dailyQuota > 0 && (quota.legacy_ambiguous === 1 || (quota.used as number) >= a.dailyQuota)))) state = 'unavailable';
-    add('upstream',a.id,state,accountPool.observedCooldown(a.id,a.stateRevision));
+    add('upstream',a.id,state,accountPool.observedCooldown(a.id,a.stateRevision),a.maxConcurrency ?? 1);
   }
   for (const a of siwc) {
     let state: State = 'unavailable', localUntil = 0;

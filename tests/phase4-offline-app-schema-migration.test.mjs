@@ -116,6 +116,11 @@ function fixture(foreignKeys) {
   assert.equal(c.api.validateSiwcProvisioning(db),false);
   assert.equal(c.api.initDatabase(),db);
   assert.deepEqual(c.counts(),{c429:2,usage:3,constructors:1});
+  // A pre-429 database always carried the one-attempt-per-account layout (ADR 0021 changed it later).
+  db.exec(`DROP TABLE ordinary_account_attempts; DROP TABLE ordinary_attempts_schema_marker;
+  CREATE TABLE ordinary_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL);
+  CREATE TABLE ordinary_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));
+  INSERT INTO ordinary_attempts_schema_marker VALUES (1,1);`);
   db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
   assert.equal(db.pragma('foreign_keys',{simple:true}),foreignKeys);
   db.exec(`INSERT INTO users(id,api_key_hash,name,email,tier) VALUES ('u','synthetic-hash','synthetic','synthetic@example.invalid','free');
@@ -186,14 +191,15 @@ test(`real application initialization survives offline cutover (foreign_keys=${f
     assert.equal(v2.assert429V2Schema(db),3n);
     assert.deepEqual(db.prepare('SELECT kind,account_id,duration_ms FROM account_429_v2_restrictions ORDER BY kind,account_id').all(),db.prepare('SELECT kind,account_id,NULL duration_ms FROM account_429_cooldowns ORDER BY kind,account_id').all());
     assert.deepEqual(db.pragma('foreign_key_check'),[]);
-    const fresh=client(db,false); assert.equal(fresh.api.initDatabase(),db); assert.deepEqual(fresh.counts(),{constructors:1,c429:2,usage:3});
-    assert.deepEqual(snapshot(db),after);
     for(const name of ['users','upstream_accounts','usage_logs','siwc_credentials','ordinary_account_attempts','siwc_account_attempts']) assert.ok(db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(name));
     assert.throws(()=>db.prepare("DELETE FROM users WHERE id='u'").run(),/user has usage history/);
     assert.throws(()=>db.prepare("DELETE FROM upstream_accounts WHERE id='a'").run(),/account has usage history/);
-    assert.deepEqual(db.pragma('foreign_key_check'),[]);
+    assert.deepEqual(snapshot(db),after);
+    // ADR 0021: the cut-over database still predates per-account concurrency, so startup refuses it
+    // (and closes the connection it was given) before writing anything.
+    const fresh=client(db,false); assert.throws(()=>fresh.api.initDatabase(),/Database predates per-account concurrency \(ADR 0021\).*npm run db:init/s);
     completed++;
-  } finally {db.close();}
+  } finally {if (db.open) db.close();}
 });
 for (const failure of ['js','sql']) test(`${failure} failure after v2 and copied usage rolls back (foreign_keys=${foreignKeys})`,()=>{
   const db=fixture(foreignKeys);try {
@@ -272,11 +278,10 @@ for (const failure of [false,true]) test(`file-backed offline cutover ${failure 
       assert.deepEqual(db.prepare('SELECT kind,account_id,duration_ms FROM account_429_v2_restrictions ORDER BY kind,account_id').all(),db.prepare('SELECT kind,account_id,NULL duration_ms FROM account_429_cooldowns ORDER BY kind,account_id').all());
     }
     if(!failure) {
+      // ADR 0021: startup refuses the cut-over (still pre-concurrency) database and leaves it unchanged.
       const startup=client(db,false,file);
-      assert.equal(startup.api.initDatabase(),db);
-      assert.deepEqual(startup.counts(),{constructors:1,c429:2,usage:3});
-      assert.deepEqual(snapshot(db),after);
-      startup.api.closeDatabase();assert.equal(db.open,false);
+      assert.throws(()=>startup.api.initDatabase(),/Database predates per-account concurrency \(ADR 0021\)/);
+      if (db.open) close(db);
     } else close(db);
     // A second open checks the state after both the migration and observer handles close.
     db=open();assert.deepEqual(snapshot(db),after);close(db);

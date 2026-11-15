@@ -15,6 +15,7 @@
 //   import-env <anthropic|openai> <name> <ENV_VAR>   import an API key from an environment variable
 //   only <accountId>                        make this the only active account of its provider
 //   enable <accountId> | disable <accountId>
+//   concurrency <accountId> <1-16>          requests the account may have in flight at once (ADR 0021)
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 
@@ -44,8 +45,8 @@ async function status() {
   console.log(`server ${BASE}: ${health ? 'up' : 'DOWN'}`);
   const [accounts, snapshot, stats] = [await accountsOf(), await api('GET', '/admin/routing-snapshot'), await api('GET', '/admin/stats')];
   const state = new Map((snapshot.accounts ?? snapshot.rows ?? []).filter(r => r.kind === 'upstream').map(r => [r.id, r.state]));
-  console.log('\naccounts (routing state: no_known_block = selectable, open = attempt in flight or uncertain, restricted = temporary block):');
-  for (const a of accounts) console.log(`  ${a.id}  ${a.provider.padEnd(9)} ${a.credentialType.padEnd(7)} ${String(a.status).padEnd(14)} ${(state.get(a.id) ?? '-').padEnd(15)} ${a.name}${a.status === 'error' && a.lastError ? `\n      ${a.lastError}` : ''}`);
+  console.log('\naccounts (routing state: no_known_block = selectable, open = every slot in flight or uncertain, restricted = temporary block; xN = concurrency limit):');
+  for (const a of accounts) console.log(`  ${a.id}  ${a.provider.padEnd(9)} ${a.credentialType.padEnd(7)} ${String(a.status).padEnd(14)} ${(state.get(a.id) ?? '-').padEnd(15)} x${String(a.maxConcurrency ?? 1).padEnd(3)} ${a.name}${a.status === 'error' && a.lastError ? `\n      ${a.lastError}` : ''}`);
   if (!accounts.length) console.log('  (none)');
   console.log(`\ntoday usage: ${JSON.stringify(stats.todayUsage)}`);
 }
@@ -124,8 +125,14 @@ switch (cmd) {
   case 'enable': case 'disable':
     await api('PATCH', `/admin/accounts/${args[0] ?? die(`usage: ${cmd} <accountId>`)}`, { status: cmd === 'enable' ? 'active' : 'disabled' });
     console.log(`${args[0]} ${cmd}d`); break;
+  case 'concurrency': {
+    const n = Number(args[1]);
+    if (!args[0] || !Number.isInteger(n) || n < 1 || n > 16) die('usage: concurrency <accountId> <1-16>');
+    await api('PATCH', `/admin/accounts/${args[0]}`, { maxConcurrency: n });
+    console.log(`${args[0]} may now run ${n} request(s) at once`); break;
+  }
   default:
-    console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').filter(l => l.startsWith('//')).slice(0, 18).map(l => l.slice(3)).join('\n'));
+    console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').filter(l => l.startsWith('//')).slice(0, 19).map(l => l.slice(3)).join('\n'));
 }
 } catch (error) {
   if (!(error instanceof Fatal)) throw error;

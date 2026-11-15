@@ -157,7 +157,8 @@ export class AccountPoolManager {
     // Staged integration only: settlement/startup must be wired before deployment.
     assert429V2Schema(db);
     const restriction = db.prepare('SELECT duration_ms FROM main.account_429_v2_restrictions WHERE kind=? AND account_id=?');
-    const open = db.prepare('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=?');
+    // ADR 0021: a row exists only when the account already has `slots` attempts in flight.
+    const full = db.prepare('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=? LIMIT 1 OFFSET ?');
     const reservation = db.prepare('SELECT day, used, legacy_ambiguous FROM account_daily_reservations WHERE account_id=?');
     const day = new Date(now).toISOString().slice(0,10);
     const nextUtcMidnight = Date.parse(`${day}T00:00:00Z`) + 86_400_000;
@@ -194,7 +195,11 @@ export class AccountPoolManager {
       if (this.refreshInFlight(provider, acc)) wait = Math.max(wait, BUSY_WAIT_MS);
       // Shared cooldown is advisory here; the dispatch fence rechecks under the writer.
       wait = Math.max(wait, restrictionWait(restriction, 'upstream', acc.id));
-      if (open.get(acc.id)) wait = Math.max(wait, BUSY_WAIT_MS);
+      // ADR 0021: busy only when every slot of this account is taken.
+      // Rows always carry the column; an account object without it takes the column default (1).
+      const slots = acc.maxConcurrency ?? 1;
+      if (!Number.isSafeInteger(slots) || slots < 1 || slots > 16) return Infinity;
+      if (full.get(acc.id, slots - 1)) wait = Math.max(wait, BUSY_WAIT_MS);
       // Advisory filtering permits fallback to another account; the claim still decides atomically.
       const quota = reservation.get(acc.id) as {day:string; used:number; legacy_ambiguous:number} | undefined;
       if (!Number.isSafeInteger(acc.dailyQuota) || acc.dailyQuota < 0) return Infinity;

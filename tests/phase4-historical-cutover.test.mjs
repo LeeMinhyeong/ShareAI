@@ -14,7 +14,9 @@ const openCli=fileURLToPath(new URL('../scripts/offline-open-upgrade.mjs',import
 const schema=fs.readFileSync(new URL('../scripts/legacy-740df93-schema.sql',import.meta.url),'utf8');
 
 // Parent owns each direct child and removes its directory only after every close.
-test('historical initialized DB crosses both cutovers and starts a separate initializer',async()=>{
+// ADR 0021 (2026-11-14): new databases only. A historical database still crosses both offline cutovers,
+// but the initializer then refuses it with a pointer to a new database and leaves it unchanged.
+test('historical initialized DB crosses both cutovers, then the initializer refuses it unchanged (ADR 0021)',async()=>{
   const root=process.env.TMPDIR;
   assert.ok(typeof root==='string' && path.isAbsolute(root),'absolute trusted TMPDIR required');
   const dir=fs.mkdtempSync(path.join(fs.realpathSync(root),'shareai-history-'));
@@ -124,8 +126,9 @@ test('historical initialized DB crosses both cutovers and starts a separate init
     const clientUrl=new URL('../src/db/client.ts',import.meta.url).href;
     const script=`import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';import net from 'node:net';import tls from 'node:tls';import http from 'node:http';import https from 'node:https';const deny=()=>{throw new Error('fixture operation denied')};for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])cp[name]=deny;net.connect=net.createConnection=deny;net.createServer=deny;net.Socket.prototype.connect=deny;net.Server.prototype.listen=deny;tls.connect=tls.createServer=deny;tls.TLSSocket.prototype.connect=deny;tls.Server.prototype.listen=deny;http.request=http.get=https.request=https.get=deny;globalThis.fetch=deny;syncBuiltinESMExports();const n=await import('node:net'),t=await import('node:tls'),h=await import('node:http'),c=await import('node:child_process');if(n.connect!==deny||t.connect!==deny||h.request!==deny||c.spawn!==deny)throw new Error('fixture guard mismatch');const {initDatabase,closeDatabase}=await import(${JSON.stringify(clientUrl)});initDatabase();closeDatabase();console.log('HISTORICAL_START_OK');`;
     const started=await run(['--experimental-transform-types','--experimental-loader',pathToFileURL(loaderFile).href,'--input-type=module','-e',script],{...basic,NODE_ENV:'test',DATABASE_URL:`sqlite:${file}`,ENCRYPTION_KEY:'00'.repeat(32),ADMIN_API_KEY:'fixture-administrator-key',LOG_LEVEL:'error',LOG_PRETTY:'false',NODE_NO_WARNINGS:'1'});
-    assert.equal(started.code,0,'separate initializer failed');assert.equal(started.signal,null);assert.ok(started.stdout.trim()==='HISTORICAL_START_OK','initializer completion marker mismatch');
-    db=open();const after=snapshot(db);assert.deepEqual(after.rows.usage_logs,converted.rows.usage_logs);
+    assert.notEqual(started.code,0,'a pre-ADR 0021 database must not start');assert.equal(started.signal,null);assert.ok(started.stdout.trim()!=='HISTORICAL_START_OK','initializer must not complete');
+    assert.ok(started.stderr.includes('Database predates per-account concurrency (ADR 0021)') && started.stderr.includes('npm run db:init'),'refusal must point to a new database');
+    db=open();const after=snapshot(db);assert.deepEqual(after,converted,'refusal leaves the database unchanged');
     for(const t of Object.keys(historical.rows))if(t!=='usage_logs')assert.deepEqual(after.rows[t],historical.rows[t]);
     assert.deepEqual(db.pragma('foreign_key_check'),[]);close(db);
   } finally {

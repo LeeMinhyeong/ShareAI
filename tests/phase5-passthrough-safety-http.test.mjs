@@ -102,24 +102,26 @@ test('quota: each passthrough request reserves user quota; exhaustion is a local
   assert.equal(third.status, 429, 'the same user quota covers /v1/responses');
 });
 
-test('Esc: a client disconnect mid-stream converts the OPEN to the router-abort restriction (messages)', async () => {
+// ADR 0021 2Z: Esc gives the slot back at once; the account is not rested.
+test('Esc: a client disconnect mid-stream releases the slot without a rest (messages)', async () => {
   const a = anthropicKey('esc-m');
   const held = heldStream([start]);
   upstream(() => new Response(held.body, {headers:{'content-type':'text/event-stream'}}));
   const r = await send('/v1/messages', messagesBody, {onFirstChunk: req => req.destroy()});
   assert.ok(r.aborted || r.status === 200);
-  await until(() => !open(a.id) && restriction(a.id));
-  assert.equal(restriction(a.id).duration_ms, ROUTER_ABORT_RESTRICTION_MS);
+  await until(() => !open(a.id));
   await until(() => held.cancelled);
+  assert.equal(restriction(a.id), undefined);
 });
 
-test('Esc: a client disconnect mid-stream converts the OPEN to the router-abort restriction (responses)', async () => {
+test('Esc: a client disconnect mid-stream releases the slot without a rest (responses)', async () => {
   const a = openaiKey('esc-r');
   const held = heldStream([rStart]);
   upstream(() => new Response(held.body, {headers:{'content-type':'text/event-stream'}}));
   await send('/v1/responses', responsesBody, {onFirstChunk: req => req.destroy()});
-  await until(() => !open(a.id) && restriction(a.id));
-  assert.equal(restriction(a.id).duration_ms, ROUTER_ABORT_RESTRICTION_MS);
+  await until(() => !open(a.id));
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(restriction(a.id), undefined);
 });
 
 test('idle limit: a stalled stream ends with a router error event and the router-abort restriction', async () => {

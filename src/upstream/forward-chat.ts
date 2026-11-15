@@ -235,8 +235,11 @@ export async function forwardResponses(req: Request, res: Response) { return run
 
 async function runInference<P extends ParsedInference, O>(req: Request, res: Response, adapter: InferenceAdapter<P, O>) {
   const user = req.user!; const started = process.hrtime.bigint(); const controller = new AbortController();
-  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-  if (res.destroyed && !res.writableEnded) controller.abort();
+  // ADR 0021 2Z: true only when the client's disconnect is what aborted this request (not a router timer).
+  let clientCancelled = false;
+  const clientGone = () => { if (!controller.signal.aborted) clientCancelled = true; controller.abort(); };
+  res.on('close', () => { if (!res.writableEnded) clientGone(); });
+  if (res.destroyed && !res.writableEnded) clientGone();
   let account: Awaited<ReturnType<typeof accountPool.selectAccount>> = null;
   let usedToken: string | undefined;
   let observedAccount: Awaited<ReturnType<typeof accountPool.selectAccount>> = null;
@@ -520,6 +523,8 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     // Snapshot before any await: a provider failure reaches this point through
     // microtasks only, so a later client close or timer cannot be misattributed.
     const routerAborted = controller.signal.aborted;
+    // ADR 0021 2Z: snapshot with routerAborted, so a later disconnect cannot reclassify a provider failure.
+    const userCancelled = routerAborted && clientCancelled && timedOut === undefined;
     // ADR 0019: a validated provider failure inside a 200 stream is a provider
     // terminal, settled like the equivalent HTTP status (no in-stream hints).
     if (error instanceof PassthroughStreamFailure && ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt) {
@@ -548,7 +553,8 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     if (!terminalObserved) {
       if (ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt && (routerAborted || ordinaryExchangeEnded === ordinaryAttempt)) {
         const handle = ordinaryAttempt;
-        try { await settleAccountAttempt(handle, db => arm429V2(db, 'upstream', handle.accountId, ROUTER_ABORT_RESTRICTION_MS)); ordinaryAttempt = undefined; }
+        // ADR 0021 2Z: a user cancel only gives the slot back; the account itself did nothing wrong.
+        try { await settleAccountAttempt(handle, userCancelled ? undefined : db => arm429V2(db, 'upstream', handle.accountId, ROUTER_ABORT_RESTRICTION_MS)); ordinaryAttempt = undefined; }
         catch { /* Unknown conversion outcome: retain the OPEN. */ }
       }
       if (siwcAttempt && siwcDispatchedAttempt === siwcAttempt && (routerAborted || siwcExchangeEnded === siwcAttempt)) {

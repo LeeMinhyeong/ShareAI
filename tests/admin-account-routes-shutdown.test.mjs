@@ -64,7 +64,7 @@ if (process.argv[2] !== '--fixture') {
     const mutationControl = mutant ? {} : null;
     let onDb = () => {}, onCrypto = () => {}, decryptFailure = false, decryptThrown, uuidCalls = 0, keyCalls = 0;
     const touch = name => { events.push(name); onDb(); };
-    const row = { id: 'a1', name: 'A', provider: 'openai', credential_type: 'api_key', credentials: ciphertext, meta: '{}', quota_info: null, status: 'active', last_used: null, last_error: null, daily_quota: 0, used_today: 0, quota_reset_at: '2020-01-01T00:00:00Z', priority: 0, weight: 1, created_at: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' };
+    const row = { id: 'a1', name: 'A', provider: 'openai', credential_type: 'api_key', credentials: ciphertext, meta: '{}', quota_info: null, status: 'active', last_used: null, last_error: null, daily_quota: 0, used_today: 0, quota_reset_at: '2020-01-01T00:00:00Z', priority: 0, weight: 1, max_concurrency: 1, created_at: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' };
     const db = strict({ prepare(query) { sql.push(['prepare', query]); touch('prepare'); return strict({ run(...args) { sql.push(['run', args]); touch('run'); return { changes: 1 }; }, get(...args) { sql.push(['get', args]); touch('get'); return row; }, all(...args) { sql.push(['all', args]); touch('all'); return [row]; } }); } });
     const accounts = compile('db/repositories/accounts.ts', { '../client.js': strict({ getDb() { touch('getDb'); return db; } }), crypto: strict({ randomUUID: () => { uuidCalls++; return 'a1'; }, createHash() { throw Error('unexpected hash'); } }), '../../upstream/oauth.js': strict({ parseStoredCredentials() { throw Error('unexpected parser'); } }), '../../utils/encryption.js': strict({ CredentialVault: class { encrypt(value) { cryptoCalls.push(['encrypt', value]); onCrypto('encrypt'); return ciphertext; } decrypt(value) { cryptoCalls.push(['decrypt', value]); onCrypto('decrypt'); if (decryptFailure) throw decryptThrown; return plaintext; } } }) });
     const work = compile('request-work.ts', { 'node:async_hooks': strict({ AsyncLocalStorage }) }, mutationControl);
@@ -102,7 +102,7 @@ if (process.argv[2] !== '--fixture') {
     for (const [auth, expected, body] of [[null,401,{error:{type:'authentication_error',message:'Missing admin API key.'}}], ['Bearer wrong',403,{error:{type:'permission_denied',message:'Invalid admin API key.'}}]]) { const f = fixture(); const result=dispatch(f,route,auth); assert.equal(result.status,expected); assert.deepEqual(result.body,body); assert.deepEqual(f.events,[]); assert.deepEqual(f.cryptoCalls,[]); assert.deepEqual(f.logs,auth ? [['warn','Invalid admin API key attempt']] : []); }
     const f = fixture(), result = dispatch(f,route);
     assert.equal(result.status,route.status);
-    const base={id:'a1',name:'A',provider:'openai',credentialType:'api_key',status:'active',dailyQuota:0,usedToday:0,priority:0,weight:1,createdAt:'2020-01-01T00:00:00.000Z'};
+    const base={id:'a1',name:'A',provider:'openai',credentialType:'api_key',status:'active',dailyQuota:0,usedToday:0,priority:0,weight:1,maxConcurrency:1,createdAt:'2020-01-01T00:00:00.000Z'};
     assert.deepEqual(result.body,route.method === 'GET' ? {accounts:[{...base,credentialStatus:'available',lastUsed:null,lastError:null,quotaResetAt:'2020-01-01T00:00:00.000Z',updatedAt:'2020-01-01T00:00:00.000Z'}]} : {account:base});
     assert.equal(JSON.stringify([result.body,f.logs]).includes('synthetic-secret'),false);
     assert.equal(JSON.stringify([result.body,f.logs]).includes('synthetic-admin'),false);
@@ -117,12 +117,12 @@ if (process.argv[2] !== '--fixture') {
         id, name, provider, credential_type, credentials, meta, quota_info,
         status, last_used, last_error,
         daily_quota, used_today, quota_reset_at,
-        priority, weight,
+        priority, weight, max_concurrency,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'active', NULL, NULL, ?, 0, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'active', NULL, NULL, ?, 0, ?, ?, ?, ?, ?, ?)
     `;
       assert.equal(f.sql[0][1] === insert, true, 'insert statement mismatch');
-      assert.equal(JSON.stringify(f.sql[1][1]) === JSON.stringify(['a1','A','openai','api_key',ciphertext,'{}',0,tomorrow.toISOString(),0,1,instant,instant]), true, 'insert arguments mismatch');
+      assert.equal(JSON.stringify(f.sql[1][1]) === JSON.stringify(['a1','A','openai','api_key',ciphertext,'{}',0,tomorrow.toISOString(),0,1,1,instant,instant]), true, 'insert arguments mismatch');
       assert.equal(f.sql[2][1] === 'SELECT * FROM upstream_accounts WHERE id = ?', true, 'select statement mismatch');
       assert.equal(JSON.stringify(f.sql[3][1]) === JSON.stringify(['a1']), true, 'select arguments mismatch');
       assert.deepEqual(JSON.parse(JSON.stringify(f.logs)),[['debug','Admin authenticated'],['info',{accountId:'a1',name:'A',provider:'openai'},'Account created']]);

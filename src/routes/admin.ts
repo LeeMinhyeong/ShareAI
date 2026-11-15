@@ -30,6 +30,9 @@ setOnLoginComplete(async (flow, parsed) => accountRepo.create({
   credentials: parsed.credentials, meta: parsed.meta,
 }).id);
 
+/** ADR 0021: requests one account may have in flight at once. */
+const validConcurrency = (value: unknown): boolean => value === undefined || (Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= 16);
+
 function validRoutingValues(priority: unknown, weight: unknown): boolean {
   return (priority === undefined || (Number.isSafeInteger(priority) && (priority as number) >= 0)) &&
     (weight === undefined || (Number.isSafeInteger(weight) && (weight as number) >= 1));
@@ -347,10 +350,14 @@ router.patch('/users/:id', authenticateAdmin, (req: Request, res: Response) => o
  * 계정 생성
  */
 router.post('/accounts', authenticateAdmin, (req: Request, res: Response) => ownedSyncUserRoute(res, (responding) => {
-    const { name, provider, credentialType, credentials, dailyQuota = 0, priority = 0, weight = 1 } = req.body;
+    const { name, provider, credentialType, credentials, dailyQuota = 0, priority = 0, weight = 1, maxConcurrency = 1 } = req.body;
 
     if (!validRoutingValues(priority, weight)) {
       responding(); res.status(400).json({ error: { type: 'invalid_request', message: 'Invalid priority or weight' } });
+      return;
+    }
+    if (!validConcurrency(maxConcurrency)) {
+      responding(); res.status(400).json({ error: { type: 'invalid_request', message: 'maxConcurrency must be an integer from 1 to 16' } });
       return;
     }
 
@@ -372,6 +379,7 @@ router.post('/accounts', authenticateAdmin, (req: Request, res: Response) => own
       dailyQuota,
       priority,
       weight,
+      maxConcurrency,
     });
 
     logger.info({ accountId: account.id, name: account.name, provider: account.provider }, 'Account created');
@@ -387,6 +395,7 @@ router.post('/accounts', authenticateAdmin, (req: Request, res: Response) => own
         usedToday: account.usedToday,
         priority: account.priority,
         weight: account.weight,
+        maxConcurrency: account.maxConcurrency,
         createdAt: account.createdAt,
       },
     };
@@ -443,6 +452,7 @@ router.get('/accounts', authenticateAdmin, (req: Request, res: Response) => owne
         quotaResetAt: acc.quotaResetAt,
         priority: acc.priority,
         weight: acc.weight,
+        maxConcurrency: acc.maxConcurrency,
         createdAt: acc.createdAt,
         updatedAt: acc.updatedAt,
       })),
@@ -491,6 +501,7 @@ router.get('/accounts/:id', authenticateAdmin, (req: Request, res: Response) => 
         quotaResetAt: account.quotaResetAt,
         priority: account.priority,
         weight: account.weight,
+        maxConcurrency: account.maxConcurrency,
         createdAt: account.createdAt,
         updatedAt: account.updatedAt,
       },
@@ -532,11 +543,16 @@ router.patch('/accounts/:id', authenticateAdmin, (req: Request, res: Response) =
   const markResponse = () => { responseStarted = true; responding(); };
   try {
     const { id } = req.params;
-    const { name, status, dailyQuota, priority, weight, credentials } = req.body;
+    const { name, status, dailyQuota, priority, weight, credentials, maxConcurrency } = req.body;
 
     if (!validRoutingValues(priority, weight)) {
       markResponse();
       res.status(400).json({ error: { type: 'invalid_request', message: 'Invalid priority or weight' } });
+      return;
+    }
+    if (!validConcurrency(maxConcurrency)) {
+      markResponse();
+      res.status(400).json({ error: { type: 'invalid_request', message: 'maxConcurrency must be an integer from 1 to 16' } });
       return;
     }
 
@@ -555,8 +571,8 @@ router.patch('/accounts/:id', authenticateAdmin, (req: Request, res: Response) =
     // ADR 0020: re-enabling a non-active account goes through reactivate(), which
     // applies the other fields, clears the stale error text and starts a new state
     // generation in one transaction.
-    if (status === 'active' && account.status !== 'active') accountRepo.reactivate(id, { name, dailyQuota, priority, weight, credentials });
-    else accountRepo.update(id, { name, status, dailyQuota, priority, weight, credentials });
+    if (status === 'active' && account.status !== 'active') accountRepo.reactivate(id, { name, dailyQuota, priority, weight, maxConcurrency, credentials });
+    else accountRepo.update(id, { name, status, dailyQuota, priority, weight, maxConcurrency, credentials });
 
     logger.info({ accountId: id }, 'Account updated');
 
@@ -571,6 +587,7 @@ router.patch('/accounts/:id', authenticateAdmin, (req: Request, res: Response) =
         dailyQuota: updated.dailyQuota,
         priority: updated.priority,
         weight: updated.weight,
+        maxConcurrency: updated.maxConcurrency,
         updatedAt: updated.updatedAt,
       },
     };

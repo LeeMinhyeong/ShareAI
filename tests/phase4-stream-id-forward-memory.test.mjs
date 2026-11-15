@@ -70,14 +70,14 @@ test('authenticated streaming rejects a non-string response id after emitted tex
   const db = new Database(':memory:'); const nativeFetch = globalThis.fetch;
   let manager, drained=false;
   try {
-    db.exec(`CREATE TABLE upstream_accounts(id TEXT PRIMARY KEY,status TEXT,state_revision INTEGER,credential_revision INTEGER,daily_quota INTEGER);
+    db.exec(`CREATE TABLE upstream_accounts(id TEXT PRIMARY KEY,status TEXT,state_revision INTEGER,credential_revision INTEGER,daily_quota INTEGER,max_concurrency INTEGER NOT NULL DEFAULT 1);
       CREATE TABLE account_429_cooldowns(kind TEXT,account_id TEXT,until_at INTEGER);
       CREATE TABLE account_daily_reservations(account_id TEXT PRIMARY KEY,day TEXT,used INTEGER,legacy_ambiguous INTEGER);
       CREATE TABLE ordinary_account_attempts(account_id TEXT PRIMARY KEY,attempt_id TEXT);`);
     // Real v2 restriction store and schema (no runtime imports), as production uses.
     const v2=load('../src/db/account-429-v2-store.ts', {}); db.transaction(() => v2.provision429V2(db)).immediate();
     const ordinaryDeadline=load('../src/upstream/ordinary-429-deadline.ts', {});
-    db.prepare('INSERT INTO upstream_accounts VALUES (?,?,?,?,?)').run('synthetic-account','active',1,1,0);
+    db.prepare('INSERT INTO upstream_accounts VALUES (?,?,?,?,?,?)').run('synthetic-account','active',1,1,0,1);
     const account={id:'synthetic-account',provider:'openai',credentialType:'api_key',credentials:'synthetic',stateRevision:1,credentialRevision:1};
     const logger={debug(){},warn(){},error(){}};
     const writer={withAsyncWriter:async fn=>db.transaction(()=>fn(db)).immediate()};

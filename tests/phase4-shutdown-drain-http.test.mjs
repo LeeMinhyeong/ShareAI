@@ -76,7 +76,7 @@ for (const stream of [false, true]) test(`in-flight ${stream ? 'stream' : 'non-s
   } finally { await f.cleanup(); }
 });
 
-test('a client abort during shutdown still converts the OPEN to a 60s restriction before exit', {timeout: 20000}, async () => {
+test('a client abort during shutdown still settles its OPEN before exit, releasing the slot without a rest (ADR 0021 2Z)', {timeout: 20000}, async () => {
   const f = await fixture();
   try {
     const controller = new AbortController();
@@ -88,8 +88,8 @@ test('a client abort during shutdown still converts the OPEN to a 60s restrictio
     assert.equal(await inFlight, 'aborted');
     assert.equal(await f.exited, 0, f.stderr());
     const state = read(f.file);
-    assert.equal(state.open, 0, 'the aborted OPEN was converted, not stranded');
-    assert.deepEqual(state.restrictions, [{kind:'upstream', duration_ms:60000}]);
+    assert.equal(state.open, 0, 'the aborted OPEN was released, not stranded');
+    assert.deepEqual(state.restrictions, [], 'a user cancel rests nothing');
     assert.equal(state.usage.length, 1, 'the dispatched attempt was logged');
     assert.equal(state.usage[0].success, 0);
     f.release();

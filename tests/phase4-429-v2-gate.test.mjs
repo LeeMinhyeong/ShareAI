@@ -19,11 +19,11 @@ function load(path, imports = Object.create(null)) {
 function fixture(provision = true) {
   const db = new Database(':memory:');
   const store = load('../src/db/account-429-v2-store.ts');
-  db.exec(`CREATE TABLE upstream_accounts(id TEXT PRIMARY KEY,status TEXT,state_revision INTEGER,credential_revision INTEGER,daily_quota INTEGER);
+  db.exec(`CREATE TABLE upstream_accounts(id TEXT PRIMARY KEY,status TEXT,state_revision INTEGER,credential_revision INTEGER,daily_quota INTEGER,max_concurrency INTEGER NOT NULL DEFAULT 1); -- ADR 0021
   CREATE TABLE ordinary_account_attempts(account_id TEXT PRIMARY KEY,attempt_id TEXT);
   CREATE TABLE account_daily_reservations(account_id TEXT PRIMARY KEY,day TEXT,used INTEGER,legacy_ambiguous INTEGER);
   CREATE TABLE account_429_cooldowns(kind TEXT,account_id TEXT,until_at INTEGER);
-  INSERT INTO upstream_accounts VALUES('A','active',1,1,0);`);
+  INSERT INTO upstream_accounts VALUES('A','active',1,1,0,1);`);
   if (provision) db.transaction(() => store.provision429V2(db)).immediate();
   let between = () => {};
   let writes = 0;

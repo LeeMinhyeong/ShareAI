@@ -11,7 +11,11 @@ CREATE TRIGGER offline_open_audit_no_replace BEFORE INSERT ON offline_open_recov
 CREATE TRIGGER offline_open_marker_no_update BEFORE UPDATE ON offline_open_recovery_marker BEGIN SELECT RAISE(ABORT,'immutable'); END;
 CREATE TRIGGER offline_open_marker_no_delete BEFORE DELETE ON offline_open_recovery_marker BEGIN SELECT RAISE(ABORT,'immutable'); END;
 CREATE TRIGGER offline_open_marker_no_insert BEFORE INSERT ON offline_open_recovery_marker WHEN EXISTS (SELECT 1 FROM offline_open_recovery_marker) BEGIN SELECT RAISE(ABORT,'immutable'); END;`;
-const fenceSQL = kind => `CREATE TABLE ${kind}_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL); CREATE TABLE ${kind}_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));`;
+// ADR 0021: ordinary attempts are keyed by attempt (marker version 2); SIWC keeps one attempt per account (version 1).
+const fenceVersion = kind => kind === 'ordinary' ? 2 : 1;
+const fenceSQL = kind => kind === 'ordinary'
+  ? `CREATE TABLE ordinary_account_attempts (account_id TEXT NOT NULL, attempt_id TEXT NOT NULL PRIMARY KEY); CREATE TABLE ordinary_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=2));`
+  : `CREATE TABLE ${kind}_account_attempts (account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL); CREATE TABLE ${kind}_attempts_schema_marker (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1));`;
 const token = s => s === null ? null : JSON.stringify(s.match(/'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]/g));
 const safeId = s => typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$(?![\s\S])/.test(s);
 const attempt = s => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/.test(s);
@@ -49,7 +53,7 @@ function validateFence(db,kind) {
   const table=`${kind}_account_attempts`, marker=`${kind}_attempts_schema_marker`;
   validateObjects(db,fenceSQL(kind),[table,marker]);
   const rows=db.prepare(`SELECT id,version FROM main.${marker}`).all();
-  if(rows.length!==1 || rows[0].id!==1 || rows[0].version!==1) throw Error();
+  if(rows.length!==1 || rows[0].id!==1 || rows[0].version!==fenceVersion(kind)) throw Error();
   const result=db.prepare(`SELECT account_id,attempt_id FROM main.${table}`).all();
   if(result.some(r=>!safeId(r.account_id)||!attempt(r.attempt_id))) throw Error();
   return result.map(r=>({kind,account_id:r.account_id,attempt_id:r.attempt_id}));

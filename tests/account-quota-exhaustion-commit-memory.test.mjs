@@ -10,7 +10,7 @@ const code = ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.C
 function fixture({used = 1, failCommit = false} = {}) {
   let writes = 0, commits = 0, starts = 0, open = false;
   const db = {prepare(sql) {
-    if (sql.includes('SELECT status, state_revision')) return {get: () => ({status:'active',state_revision:1,credential_revision:1,daily_quota:1})};
+    if (sql.includes('SELECT status, state_revision')) return {get: () => ({status:'active',state_revision:1,credential_revision:1,daily_quota:1,max_concurrency:1})}; // ADR 0021: the fence reads the limit
     if (sql.includes('account_429_cooldowns') || sql.includes('account_429_v2_restrictions')) return {get: () => undefined};
     if (sql.includes('SELECT 1 FROM main.ordinary_account_attempts WHERE account_id=? AND attempt_id=?')) return {get: () => open ? 1 : undefined};
     if (sql.includes('SELECT 1 FROM main.ordinary_account_attempts')) return {get: () => undefined};

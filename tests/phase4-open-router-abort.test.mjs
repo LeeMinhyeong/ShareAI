@@ -1,7 +1,8 @@
 // ADR 0008 amendments (2026-11-09, 2026-11-13) / ADR 0016 item 4: a dispatched attempt
 // that ends without a provider terminal converts its OPEN into a 60s v2 restriction when
-// the router itself aborted it (client disconnect, inference timer) or when the provider
-// exchange visibly ended (network failure, unreadable or broken 2xx response). A dispatch
+// the router itself aborted it (inference timer; for SIWC also a client disconnect) or when the
+// provider exchange visibly ended (network failure, unreadable or broken 2xx response). For an
+// ordinary account a client disconnect only releases the slot (ADR 0021 2Z). A dispatch
 // whose transport outcome was never observed and any uncertain settlement keep the
 // indefinite OPEN.
 // Real Express + authenticateUser + forwardChat over a test-owned file SQLite;
@@ -146,21 +147,29 @@ if (!ISOLATED) {
     assert.equal(Number(restriction(a.id)?.duration_ms), 60000, '60s restriction armed');
   };
 
-  test('client disconnect after headers converts the OPEN into a 60s restriction', {timeout:10000}, async () => {
+  // ADR 0021 2Z: a user cancel only gives the slot back; the same account serves the next request at once.
+  const assertReleased = async a => {
+    assert.equal(open(a.id), undefined, 'slot released');
+    assert.equal(restriction(a.id), undefined, 'no account-wide rest after a user cancel');
+    mode = 'complete'; const before = calls.length;
+    const r = await bounded(request({stream:false}), 3000, 'follow-up');
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(calls.slice(before), [`Bearer sk-${a.name}`], 'served by the same account');
+  };
+
+  test('client disconnect after headers releases the slot without resting the account', {timeout:10000}, async () => {
     const a = create('after-headers'); isolate(a); mode = 'hang';
     await bounded(request({abort:'first-chunk'}), 3000, 'request');
     await bounded(handling, 3000, 'handler');
-    assertConverted(a);
-    await followUpBlocked(a);
+    await assertReleased(a);
   });
 
-  test('client disconnect before headers also converts the OPEN', {timeout:10000}, async () => {
+  test('client disconnect before headers also releases the slot without a rest', {timeout:10000}, async () => {
     const a = create('before-headers'); isolate(a); mode = 'no-headers';
     const fired = nextDispatch();
     await bounded(request({abort:fired}), 3000, 'request');
     await bounded(handling, 3000, 'handler');
-    assertConverted(a);
-    await followUpBlocked(a);
+    await assertReleased(a);
   });
 
   test('router inference timer abort mid-stream converts the OPEN', {timeout:10000}, async () => {
@@ -182,9 +191,9 @@ if (!ISOLATED) {
     await followUpBlocked(a);
   });
 
-  test('after A is aborted, a new request is served by B', {timeout:10000}, async () => {
+  test('after the router aborts A, a new request is served by B', {timeout:10000}, async () => {
     const a = create('switch-a'), b = create('switch-b', 10); isolate(a, b); mode = 'hang';
-    await bounded(request({abort:'first-chunk'}), 3000, 'request');
+    await bounded(request(), 3000, 'request');
     await bounded(handling, 3000, 'handler');
     assertConverted(a);
     mode = 'complete'; const before = calls.length;

@@ -81,7 +81,7 @@ export function initDatabase(): Database.Database {
       if (provisionOrdinary) {
         dbInstance!.exec(ORDINARY_ATTEMPTS_SQL.replace('CREATE TABLE ', 'CREATE TABLE main.'));
         dbInstance!.exec(ORDINARY_MARKER_SQL.replace('CREATE TABLE ', 'CREATE TABLE main.'));
-        dbInstance!.exec('INSERT INTO main.ordinary_attempts_schema_marker VALUES (1, 1)');
+        dbInstance!.exec('INSERT INTO main.ordinary_attempts_schema_marker VALUES (1, 2)');
       }
       if (provisionSiwc) {
         dbInstance!.exec(SIWC_ATTEMPTS_SQL.replace('CREATE TABLE ', 'CREATE TABLE main.'));
@@ -97,6 +97,7 @@ export function initDatabase(): Database.Database {
       if (!cols.some(c => c.name === 'request_revision')) dbInstance!.exec('ALTER TABLE upstream_accounts ADD COLUMN request_revision INTEGER NOT NULL DEFAULT 0');
       if (!cols.some(c => c.name === 'credential_revision')) dbInstance!.exec('ALTER TABLE upstream_accounts ADD COLUMN credential_revision INTEGER NOT NULL DEFAULT 0');
       if (!cols.some(c => c.name === 'last_refresh_revision')) dbInstance!.exec('ALTER TABLE upstream_accounts ADD COLUMN last_refresh_revision INTEGER NOT NULL DEFAULT -1');
+      if (!cols.some(c => c.name === 'max_concurrency')) dbInstance!.exec("ALTER TABLE upstream_accounts ADD COLUMN max_concurrency INTEGER NOT NULL DEFAULT 1 CHECK (typeof(max_concurrency) = 'integer' AND max_concurrency BETWEEN 1 AND 16)");
       dbInstance!.exec(`DROP TRIGGER IF EXISTS upstream_credential_revision;
         CREATE TRIGGER upstream_credential_revision AFTER UPDATE OF credentials, credential_type ON upstream_accounts
         BEGIN UPDATE upstream_accounts SET credential_revision = credential_revision + 1 WHERE id = NEW.id; END`);
@@ -217,12 +218,21 @@ const COOLDOWN_TABLE_SQL = `CREATE TABLE account_429_cooldowns (
 )`;
 
 // No expiry: a process death leaves the provider outcome unknowable.
+// ADR 0021: one row per in-flight attempt (keyed by attempt), up to the account's max_concurrency.
 const ORDINARY_ATTEMPTS_SQL = `CREATE TABLE ordinary_account_attempts (
-  account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL
+  account_id TEXT NOT NULL, attempt_id TEXT NOT NULL PRIMARY KEY
 )`;
 const ORDINARY_MARKER_SQL = `CREATE TABLE ordinary_attempts_schema_marker (
+  id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=2)
+)`;
+// The layout before ADR 0021 (one attempt per account, marker version 1): refused, never upgraded.
+const LEGACY_ORDINARY_ATTEMPTS_SQL = `CREATE TABLE ordinary_account_attempts (
+  account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL
+)`;
+const LEGACY_ORDINARY_MARKER_SQL = `CREATE TABLE ordinary_attempts_schema_marker (
   id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1)
 )`;
+const LEGACY_DATABASE_MESSAGE = 'Database predates per-account concurrency (ADR 0021) and is not upgraded; create a new database with npm run db:init';
 const SIWC_ATTEMPTS_SQL = `CREATE TABLE siwc_account_attempts (
   account_id TEXT NOT NULL PRIMARY KEY, attempt_id TEXT NOT NULL
 )`;
@@ -243,7 +253,7 @@ export function provisionFreshSafetySchema(db: Database.Database): void {
   for (const sql of [ORDINARY_ATTEMPTS_SQL, ORDINARY_MARKER_SQL, SIWC_ATTEMPTS_SQL, SIWC_MARKER_SQL]) {
     db.exec(sql.replace('CREATE TABLE ', 'CREATE TABLE main.'));
   }
-  db.exec('INSERT INTO main.ordinary_attempts_schema_marker VALUES (1, 1); INSERT INTO main.siwc_attempts_schema_marker VALUES (1, 1)');
+  db.exec('INSERT INTO main.ordinary_attempts_schema_marker VALUES (1, 2); INSERT INTO main.siwc_attempts_schema_marker VALUES (1, 1)');
   provision429V2(db);
   if (!validateOrdinaryProvisioning(db) || !validateSiwcProvisioning(db)) throw new Error('Fresh provisioning validation failed');
   assert429V2Schema(db);
@@ -306,12 +316,13 @@ export function validateOrdinaryProvisioning(db: Database.Database): boolean {
     return false;
   }
   const tokenize = (sql: string) => JSON.stringify(sql.match(/[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[(),=]/g));
+  if (marker.sql && tokenize(marker.sql) === tokenize(LEGACY_ORDINARY_MARKER_SQL)) throw new Error(LEGACY_DATABASE_MESSAGE);
   if (!attempts || marker.type !== 'table' || marker.name !== name || !marker.sql ||
       tokenize(marker.sql) !== tokenize(ORDINARY_MARKER_SQL) ||
       marker.sql.replace(/[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[(),=]|\s+/g,'') !== '') unsafe();
   if (db.prepare("SELECT 1 FROM main.sqlite_schema WHERE tbl_name=? COLLATE NOCASE AND (type='trigger' OR type='index')").get(name)) unsafe();
   const rows = db.prepare('SELECT id,version FROM main.ordinary_attempts_schema_marker').all() as {id:number;version:number}[];
-  if (rows.length !== 1 || rows[0].id !== 1 || rows[0].version !== 1) unsafe();
+  if (rows.length !== 1 || rows[0].id !== 1 || rows[0].version !== 2) unsafe();
   return true;
 }
 function validateOrdinaryAttempts(db: Database.Database): boolean {
@@ -321,12 +332,13 @@ function validateOrdinaryAttempts(db: Database.Database): boolean {
   const object = db.prepare('SELECT type,name,sql FROM main.sqlite_schema WHERE name=? COLLATE NOCASE').get(name) as {type:string;name:string;sql:string} | undefined;
   if (!object) return false;
   const tokens = (sql: string) => JSON.stringify(sql.match(/[A-Za-z_][A-Za-z_0-9]*|[(),]/g));
+  if (object.sql && tokens(object.sql) === tokens(LEGACY_ORDINARY_ATTEMPTS_SQL)) throw new Error(LEGACY_DATABASE_MESSAGE);
   if (object.type !== 'table' || object.name !== name || !object.sql || tokens(object.sql) !== tokens(ORDINARY_ATTEMPTS_SQL) || object.sql.replace(/[A-Za-z_][A-Za-z_0-9]*|[(),]|\s+/g,'') !== '') unsafe();
   if (db.prepare("SELECT 1 FROM main.sqlite_schema WHERE tbl_name=? COLLATE NOCASE AND (type='trigger' OR (type='index' AND sql IS NOT NULL))").get(name)) unsafe();
   const indexes = db.prepare('PRAGMA main.index_list(ordinary_account_attempts)').all() as {name:string;unique:number;origin:string;partial:number}[];
   if (indexes.length !== 1 || indexes[0].name !== 'sqlite_autoindex_ordinary_account_attempts_1' || indexes[0].unique !== 1 || indexes[0].origin !== 'pk' || indexes[0].partial !== 0) unsafe();
   const keys = (db.prepare('PRAGMA main.index_xinfo(sqlite_autoindex_ordinary_account_attempts_1)').all() as {name:string;key:number;desc:number;coll:string}[]).filter(k => k.key === 1);
-  if (keys.length !== 1 || keys[0].name !== 'account_id' || keys[0].desc !== 0 || keys[0].coll !== 'BINARY') unsafe();
+  if (keys.length !== 1 || keys[0].name !== 'attempt_id' || keys[0].desc !== 0 || keys[0].coll !== 'BINARY') unsafe();
   return true;
 }
 
