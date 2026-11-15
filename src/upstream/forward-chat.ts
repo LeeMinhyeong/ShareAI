@@ -18,6 +18,7 @@ import type Database from 'better-sqlite3';
 import type { CredentialType } from '../db/schema.js';
 import { refreshSiwcSnapshot } from './siwc-refresh.js';
 import { SettingsRepository, STRATEGIES } from '../db/repositories/settings.js';
+import { isOpenAIModel, prepareCross, buildResponsesBody, MessagesFromResponses, frameEvent, sseOf, aggregateMessage, anthropicErrorFromOpenAI, anthropicErrorFromOpenAIFrame, crossRelayedHeader, CROSS_PING, type CrossRequest, type AnthropicEvent } from './cross-messages.js';
 
 import { ordinary429Deadline, recovery429Duration as recovery429DurationAt } from './ordinary-429-deadline.js';
 export { ordinary429Deadline } from './ordinary-429-deadline.js';
@@ -227,9 +228,107 @@ export function anthropicErrorEnvelope(res: Response): void {
 
 const responsesAdapter = passthroughAdapter('responses');
 
+// ADR 0022: Claude Code (/v1/messages) asking for an OpenAI model is translated to the Responses API and
+// served by OpenAI accounts. The provider stream still goes through relayFrames (validation, provider
+// failures, terminal evidence); only what the client sees is translated.
+type CrossParsed = ParsedPassthrough & ParsedInference & { cross: CrossRequest; clientStream: boolean };
+const crossMessagesAdapter: InferenceAdapter<CrossParsed, PassthroughResult> = {
+  allowSiwc: false,
+  parse(req) {
+    const parsed = parsePassthrough('anthropic-messages', req);
+    // Route on the exact bytes parsePassthrough validated, not on body-parser's view.
+    const body = JSON.parse(parsed.body.toString('utf8'));
+    if (!isOpenAIModel(body.model)) throw new UpstreamError(400, 'The request body model does not match the routed model');
+    const cross = prepareCross(body);
+    return {protocol:'responses', provider:'openai', model:cross.model, stream:true, body:Buffer.alloc(0), query:'', headers:{}, cross, clientStream:parsed.stream, routerOptions:undefined, generationOptions:false};
+  },
+  start(_provider, auth, parsed, signal, invoke) {
+    const kind = auth.kind === 'oauth' ? 'oauth' : 'api_key';
+    // Client headers are never forwarded; the Codex backend gets the originator the chat path sends.
+    return startPassthrough({...parsed, body:Buffer.from(JSON.stringify(buildResponsesBody(parsed.cross, kind))), headers:kind === 'oauth' ? {originator:'codex_cli_rs'} : {}}, auth, signal, invoke);
+  },
+  async respond(output, parsed, {res, signal, settle, touch, observeUsage}) {
+    const translator = new MessagesFromResponses(parsed.cross.clientModel, parsed.cross.toolNames);
+    const relayed: Record<string, string> = {};
+    for (const [name, value] of Object.entries(output.headers)) if (crossRelayedHeader(name)) relayed[name] = value;
+    const collected: AnthropicEvent[] = [];
+    const finishJson = async (events: AnthropicEvent[], usage: TokenUsage | undefined) => {
+      collected.push(...events);
+      const message = aggregateMessage(collected);
+      observeUsage(usage);
+      await settle();
+      res.status(200);
+      for (const [name, value] of Object.entries(relayed)) res.setHeader(name, value);
+      res.json(message);
+    };
+    if (output.kind === 'json') {
+      let value: unknown;
+      try { value = JSON.parse(output.body.toString('utf8')); } catch { throw new UpstreamError(502, 'Malformed upstream JSON response'); }
+      const events = translator.fromJson(value);
+      if (!parsed.clientStream) return finishJson(events, output.usage);
+      observeUsage(output.usage);
+      await settle();
+      res.status(200);
+      for (const [name, value] of Object.entries(relayed)) res.setHeader(name, value);
+      res.setHeader('content-type', 'text/event-stream'); res.setHeader('cache-control', 'no-cache');
+      res.end(events.map(sseOf).join(''));
+      return;
+    }
+    if (parsed.clientStream) {
+      res.status(200);
+      for (const [name, value] of Object.entries(relayed)) res.setHeader(name, value);
+      res.setHeader('content-type', 'text/event-stream'); res.setHeader('cache-control', 'no-cache');
+      res.flushHeaders();
+    }
+    let lastWrite = Date.now();
+    // Long reasoning sends nothing the client can see; a ping keeps idle proxies from closing the stream.
+    const keepAlive = async () => {
+      if (!parsed.clientStream || Date.now() - lastWrite < CROSS_PING.ms) return;
+      lastWrite = Date.now();
+      if (!res.write(sseOf({type:'ping'}))) await once(res, 'drain', {signal});
+    };
+    for await (const frame of output.frames) {
+      let event: any;
+      try { event = frameEvent(frame.raw); } catch { throw new UpstreamError(502, 'Malformed or incomplete upstream stream'); }
+      if (event === undefined) { await keepAlive(); touch(); continue; }
+      if (frame.terminal) {
+        const closing = translator.finish(event);
+        if (!parsed.clientStream) return finishJson(closing, frame.usage);
+        // The client terminal is withheld until the attempt is durably settled.
+        observeUsage(frame.usage);
+        await settle();
+        res.end(closing.map(sseOf).join(''));
+        return;
+      }
+      const translated = translator.push(event);
+      if (!parsed.clientStream) collected.push(...translated);
+      else if (translated.length) { lastWrite = Date.now(); if (!res.write(translated.map(sseOf).join(''))) await once(res, 'drain', {signal}); }
+      else await keepAlive();
+      touch();
+    }
+    throw new UpstreamError(502, 'Malformed or incomplete upstream stream');
+  },
+  writeError(res, error, status) {
+    const validErrorStatus = Number.isInteger(status) && status >= 400 && status <= 599;
+    if (error instanceof PassthroughHttpError && !res.headersSent) {
+      res.status(error.status);
+      for (const [name, value] of Object.entries(error.forwardHeaders)) if (crossRelayedHeader(name)) res.setHeader(name, value);
+      res.json(anthropicErrorFromOpenAI(error.status, error.body));
+    } else if (error instanceof PassthroughStreamFailure && !res.headersSent) {
+      res.status(error.status).json(anthropicErrorFromOpenAIFrame(error.raw, error.status));
+    } else if (res.headersSent && !res.destroyed && !res.writableEnded && String(res.getHeader('Content-Type') ?? '').toLowerCase().includes('text/event-stream')) {
+      // Written only now, after the catch block settled the attempt.
+      if (error instanceof PassthroughStreamFailure) res.end(sseOf(anthropicErrorFromOpenAIFrame(error.raw, error.status)));
+      else res.end(routerErrorFrame('anthropic-messages', errorMessage(error)));
+    } else if (res.headersSent) res.destroy();
+    else res.status(validErrorStatus ? status : 502).json(routerErrorBody('anthropic-messages', validErrorStatus ? status : 502, errorMessage(error)));
+  },
+};
+
 export async function forwardChat(req: Request, res: Response) { return runInference(req, res, chatCompletionsAdapter); }
 /** POST /v1/messages: Anthropic Messages passthrough for Claude Code (ADR 0019). */
-export async function forwardMessages(req: Request, res: Response) { return runInference(req, res, anthropicMessagesAdapter); }
+// ADR 0022: an OpenAI model name crosses to OpenAI accounts; the cross adapter re-checks the raw bytes.
+export async function forwardMessages(req: Request, res: Response) { return isOpenAIModel(req.body?.model) ? runInference(req, res, crossMessagesAdapter) : runInference(req, res, anthropicMessagesAdapter); }
 /** POST /v1/responses: OpenAI Responses passthrough for Codex (ADR 0019). */
 export async function forwardResponses(req: Request, res: Response) { return runInference(req, res, responsesAdapter); }
 

@@ -219,7 +219,7 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 
 ## Phase 5 이후 추가 개발 (2026-11-10, 사용자 결정, ADR 0019)
 
-- **교차 공급자 변환(1B):** Claude Code(`/v1/messages`)로 OpenAI 계정, Codex(`/v1/responses`)로 Anthropic 계정 사용. Phase 5 완료 후 별도 ADR로 손실 범위(thinking 서명, 도구 형식, 캐시)와 완료 조건을 정하고 진행한다.
+- **교차 공급자 변환(1B):** Claude Code(`/v1/messages`)로 OpenAI 계정, Codex(`/v1/responses`)로 Anthropic 계정 사용. Phase 5 완료 후 별도 ADR로 손실 범위(thinking 서명, 도구 형식, 캐시)와 완료 조건을 정하고 진행한다. → **2026-11-15 1단계(Claude Code → OpenAI) 구현, [ADR 0022](docs/adr/0022-cross-provider-messages-to-openai.md). Codex → Anthropic은 남음.**
 - `/v1/messages/count_tokens`, `/v1/models` 탐색, Codex WebSocket·원격 압축, SIWC 계정의 새 엔드포인트 사용, 10MB 초과 본문.
 
 ## Phase 5 1차 리뷰 잔여 (2026-11-10, deleg_aec37528)
@@ -280,3 +280,14 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 - 라우팅 스냅숏의 `open`은 이제 "모든 자리가 찼음"이다. 일부만 쓰는 계정은 `no_known_block`으로 보인다. 진행 중 개수 표시는 없다(대시보드 포함).
 - 테스트 가짜 DB 다수는 자리 판정 쿼리의 OFFSET 인자를 무시하므로 한도 1만 검증한다. 한도 2 이상의 다중 프로세스 경합 테스트는 없다.
 - (테스트 기반) `tests/siwc-local-only-listen.mjs`는 무작위 포트(30000~60000)에서 `EADDRINUSE`만 재시도한다. Windows가 예약한 포트 구간(`netsh int ipv4 show excludedportrange`)에 걸리면 `EACCES`로 실패해 `siwc-local-cooldown-reselect`가 가끔 실패한다(2026-11-14 확인, ADR 0021 이전 커밋에서도 같은 비율).
+
+## ADR 0022 남은 일 (2026-11-15)
+
+- 실제 확인(사용자): Claude Code + OpenAI API 키, Claude Code + Codex 구독으로 도구 대화(여러 턴, 병렬 호출, 이미지 도구 결과), 세션 중 Claude ↔ GPT 모델 전환. 실제 프레임을 녹화해 회귀 테스트로 추가.
+- `prompt_cache_key`를 보내지 않는다. Claude Code의 긴 고정 접두가 캐시를 덜 탈 수 있다(사용자·세션 해시를 키로 쓰는 안).
+- 이른 공급자 실패(문맥 길이 초과 등)를 HTTP 상태로 돌려주려면 첫 내용 이벤트까지 헤더를 미뤄야 한다.
+- 변환할 수 없는 출력으로 끝난 시도도 계정을 60초 쉬게 한다(계정 잘못이 아님). 별도 분류 검토.
+- 공급자 오류 문구의 키 끝자리·조직 ID 가리기 검토(ADR 0019 3B 전체와 함께).
+- `/v1/messages/count_tokens`는 라우터에 없다(Claude·GPT 모두).
+- 비추론 모델(gpt-4.1, gpt-4o)은 Claude Code가 thinking 설정을 보내면 `reasoning`이 붙어 거부될 수 있다.
+- ping은 공급자에게서 프레임이 올 때만 검사한다. 공급자가 완전히 조용하면 클라이언트도 조용하다(프레임과 무관한 타이머 방식 검토).
