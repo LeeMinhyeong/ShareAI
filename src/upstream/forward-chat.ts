@@ -348,7 +348,7 @@ const crossResponsesAdapter: InferenceAdapter<CrossResponsesParsed, PassthroughR
     const translator = new ResponsesFromMessages(parsed.cross.clientModel, parsed.cross.toolMap, parsed.cross.model);
     const relayed: Record<string, string> = {};
     for (const [name, value] of Object.entries(output.headers)) if (crossRelayedHeader(name)) relayed[name] = value;
-    if (output.kind === 'json') throw new UpstreamError(502, 'Upstream returned a non-stream response');
+    if (output.kind === 'json') throw Object.assign(new UpstreamError(502, 'Upstream returned a non-stream response'), {translationLimit:true as const});
     if (parsed.clientStream) {
       res.status(200);
       for (const [name, value] of Object.entries(relayed)) res.setHeader(name, value);
@@ -694,6 +694,9 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     const routerAborted = controller.signal.aborted;
     // ADR 0021 2Z: snapshot with routerAborted, so a later disconnect cannot reclassify a provider failure.
     const userCancelled = routerAborted && clientCancelled && timedOut === undefined;
+    // A valid provider response the cross adapter could not translate is the router's limit, not the account's:
+    // the slot is given back like a user cancel, without a restriction or a failure record.
+    const translationLimit = error instanceof UpstreamError && error.translationLimit === true;
     // ADR 0019: a validated provider failure inside a 200 stream is a provider
     // terminal, settled like the equivalent HTTP status (no in-stream hints).
     if (error instanceof PassthroughStreamFailure && ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt) {
@@ -723,7 +726,7 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
       if (ordinaryAttempt && ordinaryDispatchedAttempt === ordinaryAttempt && (routerAborted || ordinaryExchangeEnded === ordinaryAttempt)) {
         const handle = ordinaryAttempt;
         // ADR 0021 2Z: a user cancel only gives the slot back; the account itself did nothing wrong.
-        try { await settleAccountAttempt(handle, userCancelled ? undefined : db => arm429V2(db, 'upstream', handle.accountId, ROUTER_ABORT_RESTRICTION_MS)); ordinaryAttempt = undefined; }
+        try { await settleAccountAttempt(handle, userCancelled || translationLimit ? undefined : db => arm429V2(db, 'upstream', handle.accountId, ROUTER_ABORT_RESTRICTION_MS)); ordinaryAttempt = undefined; }
         catch { /* Unknown conversion outcome: retain the OPEN. */ }
       }
       if (siwcAttempt && siwcDispatchedAttempt === siwcAttempt && (routerAborted || siwcExchangeEnded === siwcAttempt)) {
@@ -749,7 +752,7 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     const accountNotice = creditCode ? `API 크레딧 소진(${creditCode}): 크레딧을 충전한 뒤 계정을 다시 켜세요`
       : apiKeyProvider && error instanceof PassthroughHttpError && workspaceUnscopedKey(apiKeyProvider, error.status, error.body) ? '워크스페이스 미지정 API 키: 워크스페이스를 지정한 키로 바꾼 뒤 계정을 다시 켜세요'
       : null;
-    const shouldRecordFailure = account && ordinaryDispatched && !controller.signal.aborted && (accountNotice || status === 401 || status === 403 || status === 429 || !validErrorStatus || status >= 500) && !(error instanceof RefreshIntentError) && !(error instanceof AccountQuotaUnavailable);
+    const shouldRecordFailure = account && ordinaryDispatched && !controller.signal.aborted && (accountNotice || status === 401 || status === 403 || status === 429 || !validErrorStatus || status >= 500) && !(error instanceof RefreshIntentError) && !(error instanceof AccountQuotaUnavailable) && !translationLimit;
     if (siwcSelected && siwcDispatchedRevision !== undefined && !controller.signal.aborted && (!validErrorStatus || status === 429 || status >= 500)) {
       try { accountPool.recordSiwcFailure(siwcSelected, siwcDispatchedRevision); }
       catch (recordError) { logger.error({error:recordError}, 'Failed to record SIWC failure'); }
@@ -758,7 +761,7 @@ async function runInference<P extends ParsedInference, O>(req: Request, res: Res
     // "did not return an event stream"): non-secret response shape for diagnosis.
     const upstreamShape = error instanceof UpstreamError ? error.upstreamShape : undefined;
     const streamDiag = error instanceof UpstreamError ? error.streamDiag : undefined;
-    logger.error({status:logStatus, userId:user.id, ...(timedOut ? {routerTimeout:timedOut} : {}), ...(upstreamShape ? {upstream:upstreamShape} : {}), ...(streamDiag ? {upstreamStream:streamDiag} : {})}, 'Inference request failed');
+    logger.error({status:logStatus, userId:user.id, ...(translationLimit ? {translationLimit:true} : {}), ...(timedOut ? {routerTimeout:timedOut} : {}), ...(upstreamShape ? {upstream:upstreamShape} : {}), ...(streamDiag ? {upstreamStream:streamDiag} : {})}, 'Inference request failed');
     if (!res.headersSent && status === 429 && error instanceof UpstreamError && !(error instanceof PassthroughHttpError) && error.headers?.['retry-after'] !== undefined) {
       const now = Date.now();
       const deadline = ordinary429Deadline(now, error.headers['retry-after'], error.headers.date);

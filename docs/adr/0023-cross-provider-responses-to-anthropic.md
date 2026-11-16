@@ -52,6 +52,8 @@
 - 이미 열린 스트림의 라우터 오류(잘림, 시간 초과, 변환 불가)도 `response.failed`(`server_error`)로 끝낸다. Codex는 이 이벤트를 읽는다.
 - 오류: 공급자 HTTP 오류는 상태 유지, 본문을 Responses 오류 형식으로(공급자 메시지 유지). 스트림 중 공급자 `error` 이벤트는 `response.failed`(코드: 429 `rate_limit_exceeded`, 529·503 `server_is_overloaded`, 그 밖 `server_error`·`invalid_request_error`)로. 응답 헤더는 요청 id와 재시도 헤더만 전달.
 
+- **변환 한계는 계정 탓이 아니다**(2026-11-16): Codex가 표시할 수 없는 블록, 서명 없는 thinking, 문자열이 아닌 자유형식 도구 입력, 스트림 대신 온 JSON 응답은 502로 끝내되 슬롯만 반납하고 60초 제한·실패 기록을 남기지 않는다(ADR 0008 note). 공급자 스트림이 끊기면 지금처럼 60초 제한이다.
+
 ## 그대로인 것
 
 - 계정 선택, 울타리, 동시 한도, 429/5xx 제한, 시간 초과, 401 갱신, 사용량 기록, 종료 drain. 교차 요청은 공급자 `anthropic`, 모델은 접미사를 뗀 이름으로 선택·기록한다.

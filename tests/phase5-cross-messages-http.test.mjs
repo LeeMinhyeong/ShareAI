@@ -254,6 +254,16 @@ test('an output item Claude Code cannot represent ends the stream with an error 
   assert.equal(last.event, 'error');
   assert.match(last.data.error.message, /cannot represent/);
   assert.equal(open(a.id), undefined);
+  // A router translation limit is not the account's fault: no restriction, no failure record.
+  assert.equal(restriction(a.id), undefined);
+  assert.equal(repo.findById(a.id).lastError ?? null, null);
+  // A provider stream that breaks off is still restricted (ADR 0008).
+  const b = openaiKey('x-truncated');
+  upstream(() => sse([R('response.created', {response:{id:'r', status:'in_progress'}}), ...textItem('m1', 'par')]));
+  const cut = await send(claudeBody);
+  assert.equal(events(cut.text).at(-1).event, 'error');
+  assert.ok(restriction(b.id), 'a broken provider stream rests the account');
+  assert.match(repo.findById(b.id).lastError ?? '', /502/);
 });
 
 test('refusal text is shown as text and is_error tool results are marked', async () => {
@@ -473,5 +483,28 @@ test('tool search references become text and a context overflow reads "prompt is
   const o = await send({model:'gpt-5', max_tokens:100, messages:[{role:'user', content:'hi'}]});
   assert.equal(o.status, 400);
   assert.equal(JSON.parse(o.text).error.message, 'prompt is too long: Your input exceeds the context window of this model.');
+});
+
+test('invalid tool arguments from the provider are a translation limit: no restriction, no failure record', async () => {
+  const a = openaiKey('x-badargs');
+  upstream(() => sse(respFrames([
+    R('response.output_item.added', {item:{id:'fc_1', type:'function_call', call_id:'call_1', name:'Read', arguments:''}}),
+    R('response.output_item.done', {item:{id:'fc_1', type:'function_call', call_id:'call_1', name:'Read', arguments:'{not json'}}),
+  ])));
+  const r = await send({...claudeBody, stream:false});
+  assert.equal(r.status, 502, r.text);
+  assert.match(JSON.parse(r.text).error.message, /invalid tool arguments/);
+  assert.equal(open(a.id), undefined);
+  assert.equal(restriction(a.id), undefined);
+  assert.equal(repo.findById(a.id).lastError ?? null, null);
+});
+
+test('a provider stream cut inside an open output item still rests the account', async () => {
+  const a = openaiKey('x-cut-item');
+  upstream(() => sse([R('response.created', {response:{id:'r', status:'in_progress'}}), R('response.output_item.added', {item:{id:'fc_1', type:'function_call', call_id:'c1', name:'Read', arguments:''}}), R('response.function_call_arguments.delta', {item_id:'fc_1', delta:'{"file'})]));
+  const ev = events((await send(claudeBody)).text);
+  assert.equal(ev.at(-1).event, 'error');
+  assert.ok(restriction(a.id));
+  assert.match(repo.findById(a.id).lastError ?? '', /502/);
 });
 

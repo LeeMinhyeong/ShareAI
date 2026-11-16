@@ -241,7 +241,7 @@ export function frameEvent(raw: string): any {
   return JSON.parse(data.join('\n'));
 }
 
-const unsupported = (): never => { throw new UpstreamError(502, 'Upstream returned output Claude Code cannot represent'); };
+const unsupported = (): never => { throw Object.assign(new UpstreamError(502, 'Upstream returned output Claude Code cannot represent'), { translationLimit: true as const }); };
 
 export class MessagesFromResponses {
   private started = false;
@@ -369,7 +369,7 @@ export function aggregateMessage(events: AnthropicEvent[]): Record<string, unkno
   }
   for (let i = 0; i < blocks.length; i++) {
     if (blocks[i]?.type === 'tool_use') {
-      try { blocks[i].input = json[i] ? JSON.parse(json[i]) : {}; } catch { throw new UpstreamError(502, 'Upstream returned invalid tool arguments'); }
+      try { blocks[i].input = json[i] ? JSON.parse(json[i]) : {}; } catch { throw Object.assign(new UpstreamError(502, 'Upstream returned invalid tool arguments'), { translationLimit: true as const }); }
     }
   }
   return { ...message, content: blocks };

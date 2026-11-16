@@ -283,6 +283,9 @@ test('blocks Codex cannot represent, or unsigned thinking, end the stream with a
     assert.equal(ev.at(-1).data.response.error.code, 'server_error');
     assert.ok(!ev.some(e => e.event === 'response.completed'));
     assert.equal(open(a.id), undefined);
+    // A router translation limit is not the account's fault: no restriction, no failure record.
+    assert.equal(restriction(a.id), undefined);
+    assert.equal(repo.findById(a.id).lastError ?? null, null);
   }
 });
 
@@ -408,6 +411,8 @@ test('stream: false keeps only the terminal response and a router failure on an 
   upstream(() => sse([msgStart(), ...block(0, {type:'text', text:''}, [{type:'text_delta', text:'a'}])]));
   const ev = events((await send(codexBody)).text);
   assert.equal(ev.at(-1).event, 'response.failed');
+  const cut = accounts.at(-1);
+  assert.ok(restriction(cut.id), 'a provider stream that breaks off still rests the account (ADR 0008)');
 });
 
 test('boundaries: whitespace-only and envelope-only turns vanish without empty messages; GPT reasoning and verbosity pass', async () => {
@@ -446,5 +451,47 @@ test('the Codex 0.167 request shape: no instructions, developer messages, client
   assert.deepEqual(b.tools.map(t => t.name), ['shell', 'apply_patch', 'multi_agent_v1__spawn_agent']);
   assert.deepEqual(b.output_config, {effort:'high'});
   assert.equal(b.client_metadata, undefined);
+});
+
+test('a provider JSON reply on the cross path is a translation limit: 502, slot back, no restriction', async () => {
+  const a = anthropicKey('y-json-reply');
+  upstream(() => new Response(JSON.stringify({id:'msg', type:'message', role:'assistant', content:[{type:'text', text:'hi'}], stop_reason:'end_turn', usage:{input_tokens:1, output_tokens:1}}), {status:200, headers:{'content-type':'application/json'}}));
+  const r = await send({...codexBody, stream:false});
+  assert.equal(r.status, 502, r.text);
+  assert.match(JSON.parse(r.text).error.message, /non-stream response/);
+  assert.equal(open(a.id), undefined);
+  assert.equal(restriction(a.id), undefined);
+  assert.equal(repo.findById(a.id).lastError ?? null, null);
+});
+
+test('translation limit boundaries: a cut inside a block and a non-JSON 200 still rest the account; a limit cancels the provider stream', async () => {
+  // A provider stream cut inside an open block (no message_stop) is the provider's failure (ADR 0008).
+  const cut = anthropicKey('y-cut-block');
+  upstream(() => sse([msgStart(), A('content_block_start', {index:0, content_block:{type:'thinking', thinking:'', signature:''}}), A('content_block_delta', {index:0, delta:{type:'thinking_delta', thinking:'x'}})]));
+  const c = events((await send(codexBody)).text);
+  assert.equal(c.at(-1).event, 'response.failed');
+  assert.ok(restriction(cut.id), 'cut inside a block');
+  assert.match(repo.findById(cut.id).lastError ?? '', /502/);
+  // A 200 that is not an event stream or a complete message JSON (an HTML page) is not a translation limit.
+  const html = anthropicKey('y-html');
+  upstream(() => new Response('<html>challenge</html>', {status:200, headers:{'content-type':'text/html'}}));
+  assert.equal((await send(codexBody)).status, 502);
+  assert.ok(restriction(html.id), 'HTML 200');
+  const partial = anthropicKey('y-partial-json');
+  upstream(() => new Response(JSON.stringify({type:'message', content:[]}), {status:200, headers:{'content-type':'application/json'}}));
+  assert.equal((await send(codexBody)).status, 502);
+  assert.ok(restriction(partial.id), 'JSON that is not a complete message');
+  // A limit hit while the provider is still streaming cancels the provider body before the slot is given back.
+  const live = anthropicKey('y-cancel-on-limit');
+  let cancelled = false;
+  upstream(() => new Response(new ReadableStream({start(ctl) {
+    ctl.enqueue(new TextEncoder().encode([msgStart(), A('content_block_start', {index:0, content_block:{type:'server_tool_use', id:'srv', name:'web_search', input:{}}})].map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')));
+  }, cancel() { cancelled = true; }}), {status:200, headers:{'content-type':'text/event-stream'}}));
+  const l = events((await send(codexBody)).text);
+  assert.equal(l.at(-1).event, 'response.failed');
+  for (let i = 0; i < 50 && !cancelled; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(cancelled, true, 'the provider stream is cancelled');
+  assert.equal(open(live.id), undefined);
+  assert.equal(restriction(live.id), undefined);
 });
 

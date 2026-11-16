@@ -30,6 +30,8 @@ export class UpstreamError extends Error {
   upstreamShape?: { status: number; contentType: string | null; contentEncoding: string | null; contentLength: string | null; hasBody: boolean };
   /** Server-log diagnosis only: where a relayed provider stream stopped being valid. Fixed labels and counts, never content. */
   streamDiag?: { rule: string; bytes: number; frames: number; lead: string };
+  /** The router could not translate a valid provider response for the client (ADR 0022/0023 cross paths): a router limit, not an account fault. */
+  translationLimit?: true;
   constructor(public status: number, message: string, headers?: Record<string, string>) { super(message); this.headers = headers; }
 }
 

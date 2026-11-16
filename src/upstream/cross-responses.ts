@@ -308,7 +308,7 @@ export function crossAnthropicHeaders(kind: 'api_key' | 'oauth'): Record<string,
 // --- Anthropic stream → Responses stream ---------------------------------------------------------
 
 export type ResponsesEvent = { type: string; [key: string]: unknown };
-const unsupported = (): never => { throw new UpstreamError(502, 'Upstream returned output Codex cannot represent'); };
+const unsupported = (): never => { throw Object.assign(new UpstreamError(502, 'Upstream returned output Codex cannot represent'), { translationLimit: true as const }); };
 const count = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : 0;
 
 type Block =
