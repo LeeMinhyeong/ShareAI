@@ -56,6 +56,9 @@
 - 공급자 HTTP 오류는 상태를 유지하고, 본문만 Anthropic 오류 형식으로 바꾼다(공급자 메시지 유지, ADR 0019 3B의 취지).
 - 스트림 중 공급자 실패 이벤트는 Anthropic `event: error`로 바꿔 보낸다(공급자 메시지 유지). 라우터 자체 오류는 기존 Anthropic 형식 그대로다.
 
+- **Claude Code 2.1.3xx는 `messages` 안에 `role: system` 메시지(환경 정보, 알림)를 보낸다**(2026-11-16 위 실행에서 발견, 그 전에는 모든 요청이 400). 같은 위치의 Responses `developer` 메시지로 바꾼다. 텍스트만 옮기고, 텍스트가 아닌 내용은 400이다.
+- Claude Code 도구 검색(ToolSearch)의 결과에 들어 있는 `tool_reference` 블록은 `Tool loaded: <이름>` 텍스트로 바꾼다(모든 도구 정의가 이미 OpenAI 요청에 들어 있음, 리뷰 반영). 공급자의 `context_length_exceeded` 오류 문구 앞에는 `prompt is too long:`을 붙인다. Claude Code는 이 문구를 보고 자동 압축을 시작한다.
+
 ## 그대로인 것
 
 - 계정 선택, OPEN 울타리, 동시 한도(ADR 0021), 429/5xx 제한, 시간 초과, 401 갱신 재시도, 사용량 기록, 종료 drain은 기존 파이프라인을 그대로 쓴다. 교차 요청은 공급자 `openai`, 모델은 접미사를 뗀 이름으로 선택·기록한다.
@@ -65,7 +68,7 @@
 ## 받아들인 위험
 
 - Codex 구독 백엔드가 Codex CLI가 아닌 지시문·도구 구성을 받아 주는지 공식 근거가 없다. 실제 계정으로만 확인할 수 있다. ChatGPT 구독을 Codex CLI 밖에서 쓰는 것도 약관상 위험이 있다(README 참고).
-- Claude Code가 `gpt-5.1-codex(high)` 같은 이름을 그대로 보내는지, 백그라운드 작업(제목 생성 등)에 쓰는 작은 모델이 무엇인지는 미확인이다. 작은 모델이 Claude면 그 요청은 Anthropic 계정으로 간다.
+- Claude Code가 `모델(레벨)` 이름을 그대로 보내는 것은 **확인했다**(2026-11-16, Claude Code 2.1.323을 가짜 공급자를 붙인 로컬 라우터에 연결, `--model "gpt-6.1-terra(high)"`). Claude Code는 모르는 모델이라 컨텍스트 창을 1M으로 가정한다는 경고를 낸다. 백그라운드 작업(제목 생성 등)에 쓰는 작은 모델이 무엇인지는 미확인이다. 작은 모델이 Claude면 그 요청은 Anthropic 계정으로 간다.
 - Claude Code의 WebSearch처럼 서버 도구에 기대는 기능은 OpenAI 모델에서는 검색 없이 답한다(결정 5).
 - 추론 맥락이 턴 사이에 이어지지 않아 Claude 모델이나 Codex CLI보다 품질이 낮을 수 있다(결정 4).
 - 공급자 메시지를 그대로 보여 주므로, OpenAI 오류 문구에 담긴 키 끝자리·조직 ID·요금제 정보가 사용자에게 보일 수 있다(ADR 0019 3B와 같은 위험, 경로가 하나 늘었다).

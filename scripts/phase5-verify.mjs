@@ -4,11 +4,13 @@
 // the only secret it prints is a newly created ShareAI *user* key (shown once).
 //
 //   SHAREAI_URL   default http://127.0.0.1:20100
-//   ADMIN_API_KEY required (same value as the server's .env)
+//   ADMIN_API_KEY default: read from ./.env (run from the project folder)
+//   SHAREAI_API_KEY probes only; default: the key saved by `user <name> --save`
 //
 // Commands:
 //   status                                  accounts, routing state, today's usage
-//   user <name>                             create a ShareAI user and print its key once
+//   user <name> [--save]                    create a ShareAI user; prints its key once, or with --save
+//                                           writes it to data/verify-user.key without printing it
 //   login <anthropic|openai> <name>         browser OAuth login for a subscription account
 //   import <anthropic|openai> <name> <file> import a credential from a file (API key, setup-token,
 //                                           ~/.claude/.credentials.json or ~/.codex/auth.json)
@@ -16,18 +18,37 @@
 //   only <accountId>                        make this the only active account of its provider
 //   enable <accountId> | disable <accountId>
 //   concurrency <accountId> <1-16>          requests the account may have in flight at once (ADR 0021)
-import { readFileSync } from 'node:fs';
+//   probe empty                             no account yet: what clients see (403)
+//   probe claude <model...>                 Codex-shaped requests with Claude models (ADR 0023)
+//   probe gpt <model...>                    Claude Code-shaped requests with OpenAI models (ADR 0022)
+//   probe parallel <model> [n]              n requests at once on the active accounts (ADR 0021)
+//                                           probe results are redacted and saved under data/
+//   codex-setup <claude-model...> [--context N] [--base <slug>] [--force]
+//                                           writes the Codex profile shareai-claude (catalog + config)
+//                                           into CODEX_HOME (default ~/.codex) for Claude models (ADR 0023)
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { createProber, buildClaudeCatalog, claudeProfileToml } from './verify-probes.mjs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
 const BASE = (process.env.SHAREAI_URL || 'http://127.0.0.1:20100').replace(/\/+$/, '');
-const ADMIN = process.env.ADMIN_API_KEY;
+// The admin key is read from .env instead of being typed: chat tools may mask it when shown.
+function dotenvValue(name) {
+  try {
+    const line = readFileSync('.env', 'utf8').split(/\r?\n/).find(l => l.startsWith(`${name}=`));
+    return line ? line.slice(name.length + 1).trim().replace(/^(['"])(.*)\1$/, '$2') : undefined;
+  } catch { return undefined; }
+}
+const ADMIN = process.env.ADMIN_API_KEY || dotenvValue('ADMIN_API_KEY');
+const USER_KEY_FILE = 'data/verify-user.key';
 const [cmd, ...args] = process.argv.slice(2);
 
 class Fatal extends Error {}
 // Throws instead of process.exit(): exiting with fetches/readline in flight crashes Node on Windows.
 function die(message) { throw new Fatal(message); }
 async function api(method, path, body) {
-  if (!ADMIN) die('ADMIN_API_KEY is not set');
+  if (!ADMIN) die('ADMIN_API_KEY is not set and ./.env has none (run from the project folder)');
   let res;
   try {
     res = await fetch(BASE + path, { method, headers: { authorization: `Bearer ${ADMIN}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -51,10 +72,62 @@ async function status() {
   console.log(`\ntoday usage: ${JSON.stringify(stats.todayUsage)}`);
 }
 
-async function user(name) {
-  if (!name) die('usage: user <name>');
+async function user(name, save) {
+  if (!name || name.startsWith('--')) die('usage: user <name> [--save]');
+  if (save && existsSync(USER_KEY_FILE)) die(`${USER_KEY_FILE} already exists; delete it first to save a new key`);
   const r = await api('POST', '/admin/users', { name, email: `${name}@phase5.invalid`, tier: 'pro', dailyLimit: 1000 });
-  console.log(`user ${r.user.id} created. ShareAI user key (shown once, use it as ANTHROPIC_AUTH_TOKEN / SHAREAI_API_KEY):\n${r.apiKey}`);
+  if (save) {
+    mkdirSync('data', { recursive: true });
+    // 'wx' never replaces an existing key file. On Windows the mode is ignored; the folder's ACL protects it.
+    writeFileSync(USER_KEY_FILE, r.apiKey + '\n', { mode: 0o600, flag: 'wx' });
+    console.log(`user ${r.user.id} created. Its ShareAI key is in ${USER_KEY_FILE} (not printed).`);
+  } else console.log(`user ${r.user.id} created. ShareAI user key (shown once, use it as ANTHROPIC_AUTH_TOKEN / SHAREAI_API_KEY):\n${r.apiKey}`);
+}
+
+function codexSetup(argv) {
+  const opt = name => { const i = argv.indexOf(name); if (i < 0) return undefined; const v = argv[i + 1]; argv.splice(i, 2); return v ?? die(`${name} needs a value`); };
+  const force = argv.includes('--force'); if (force) argv.splice(argv.indexOf('--force'), 1);
+  const context = opt('--context'), base = opt('--base');
+  const models = argv;
+  if (!models.length) die('usage: codex-setup <claude-model...> [--context N] [--base <slug>] [--force]');
+  const home = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
+  let cache; try { cache = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')); } catch { die(`cannot read ${join(home, 'models_cache.json')}; run codex once while signed in`); }
+  let built; try { built = buildClaudeCatalog(cache, models, { context: context === undefined ? undefined : Number(context), base }); } catch (e) { die(e.message); }
+  const catalogPath = join(home, 'shareai-claude-models.json'), profilePath = join(home, 'shareai-claude.config.toml');
+  for (const p of [catalogPath, profilePath]) if (existsSync(p) && !force) die(`${p} exists; pass --force to replace it`);
+  writeFileSync(catalogPath, JSON.stringify(built.catalog, null, 2));
+  writeFileSync(profilePath, claudeProfileToml({ model: models[0], catalogPath, baseUrl: BASE, context: built.context }));
+  const version = typeof cache.client_version === 'string' ? cache.client_version : 'unknown';
+  console.log(`wrote ${profilePath}\nwrote ${catalogPath} (${models.join(', ')}; copied from ${built.base}, Codex ${version} cache)\nShareAI URL in the profile: ${BASE}/v1 (set SHAREAI_URL before this command for another host)\nstart Codex with: codex --profile shareai-claude   (switch models with /model)\nrerun with --force after upgrading Codex`);
+  if (/^http:\/\//i.test(BASE) && !/^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(BASE)) console.log('warning: the ShareAI key travels unencrypted over plain http to a non-local host');
+}
+
+async function probe(kind, rest) {
+  let key = process.env.SHAREAI_API_KEY;
+  if (!key) { try { key = readFileSync(USER_KEY_FILE, 'utf8').trim(); } catch { key = ''; } }
+  if (!key) die(`no ShareAI user key: set SHAREAI_API_KEY or run "user <name> --save" first`);
+  // Results describe the accounts active right now; show them so a missing `only` is noticed.
+  if (ADMIN) {
+    try {
+      const active = (await accountsOf()).filter(a => a.status === 'active');
+      console.log(`active accounts: ${active.length ? active.map(a => `${a.name} (${a.provider} ${a.credentialType}, x${a.maxConcurrency ?? 1})`).join(', ') : 'none'}\n`);
+    } catch { /* the probe itself reports an unreachable server */ }
+  }
+  const p = createProber({ base: BASE, key });
+  try {
+    if (kind === 'claude') await p.claude(rest);
+    else if (kind === 'gpt') await p.gpt(rest);
+    else if (kind === 'parallel') await p.parallel(rest[0], rest[1] === undefined ? 2 : Number(rest[1]));
+    else if (kind === 'empty') await p.empty();
+    else die('usage: probe <empty|claude|gpt|parallel> ...');
+  } catch (error) {
+    if (error instanceof Fatal) throw error;
+    die(error.message);
+  }
+  if (p.results.length) {
+    p.save('data', kind);
+    if (p.results.some(r => r.verdict === 'FAIL')) process.exitCode = 1;
+  }
 }
 
 async function login(p, name) {
@@ -109,7 +182,9 @@ async function only(id) {
 try {
 switch (cmd) {
   case 'status': await status(); break;
-  case 'user': await user(args[0]); break;
+  case 'user': await user(args[0], args.includes('--save')); break;
+  case 'probe': await probe(args[0], args.slice(1)); break;
+  case 'codex-setup': codexSetup(args); break;
   case 'login': await login(args[0], args[1]); break;
   case 'import': {
     if (args.length < 3) die('usage: import <anthropic|openai> <name> <file>');
@@ -132,7 +207,7 @@ switch (cmd) {
     console.log(`${args[0]} may now run ${n} request(s) at once`); break;
   }
   default:
-    console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').filter(l => l.startsWith('//')).slice(0, 19).map(l => l.slice(3)).join('\n'));
+    { const src = readFileSync(new URL(import.meta.url), 'utf8').split('\n'); console.log(src.slice(1, src.findIndex(l => l.startsWith('import '))).map(l => l.slice(3)).join('\n')); }
 }
 } catch (error) {
   if (!(error instanceof Fatal)) throw error;

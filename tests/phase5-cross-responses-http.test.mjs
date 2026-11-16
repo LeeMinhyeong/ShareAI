@@ -427,3 +427,24 @@ test('boundaries: whitespace-only and envelope-only turns vanish without empty m
   assert.deepEqual(b.thinking, {type:'adaptive'});
 });
 
+test('the Codex 0.167 request shape: no instructions, developer messages, client_metadata, namespace and freeform tools', async () => {
+  anthropicKey('y-codex167');
+  upstream(() => sse(textReply('ok')));
+  const r = await send({model:'claude-opus-5-5', stream:true, store:false, tool_choice:'auto', parallel_tool_calls:true, include:['reasoning.encrypted_content'],
+    prompt_cache_key:'01a1-thread', reasoning:{effort:'high', summary:'auto'}, client_metadata:{thread_id:'01a1-thread', 'x-codex-turn-metadata':'{}'},
+    tools:[codexTools[0], codexTools[1], {type:'namespace', name:'multi_agent_v1', description:'agents', tools:[{type:'function', name:'spawn_agent', parameters:{type:'object', properties:{}}}]}, {type:'web_search'}],
+    input:[
+      {type:'message', role:'developer', content:[{type:'input_text', text:'You are Codex, an agent based on Claude.'}]},
+      {type:'message', role:'developer', content:[{type:'input_text', text:'<permissions>'}, {type:'input_text', text:'<skills>'}]},
+      {type:'message', role:'user', content:[{type:'input_text', text:'<environment_context>'}]},
+      {type:'message', role:'user', content:[{type:'input_text', text:'Say hi'}]},
+    ]});
+  assert.equal(r.status, 200, r.text);
+  const b = calls[0].body;
+  assert.deepEqual(b.system.map(s => s.text), ['You are Codex, an agent based on Claude.', '<permissions>\n<skills>']);
+  assert.deepEqual(b.messages, [{role:'user', content:[{type:'text', text:'<environment_context>'}, {type:'text', text:'Say hi', cache_control:CC}]}]);
+  assert.deepEqual(b.tools.map(t => t.name), ['shell', 'apply_patch', 'multi_agent_v1__spawn_agent']);
+  assert.deepEqual(b.output_config, {effort:'high'});
+  assert.equal(b.client_metadata, undefined);
+});
+

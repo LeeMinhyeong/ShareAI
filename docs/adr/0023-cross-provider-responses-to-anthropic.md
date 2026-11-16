@@ -60,8 +60,8 @@
 ## 받아들인 위험
 
 - Claude 구독에 Claude Code인 척 요청하는 것은 약관 위험이 더 크다(결정 5). 구독이 비-Claude Code 도구 구성이나 adaptive·effort 형식을 받아 주는지는 실제 확인 전까지 모른다.
-- Codex가 `encrypted_content`를 늘 돌려보내는지(특히 `include`가 없을 때) 미확인이다. 돌려보내지 않으면 도구 루프 중 Anthropic이 400을 낸다.
-- Codex 전용 동작(원격 압축, 내장 도구 호출, 모델별 프롬프트)은 Claude 모델에서 쓸 수 없다. Codex가 모르는 모델 이름에 어떤 도구 구성을 보내는지 미확인이다.
+- Codex가 추론 항목을 `encrypted_content`·요약과 함께 다음 요청에 돌려보내는 것은 **확인했다**(2026-11-16, Codex 0.167.2를 가짜 Anthropic을 붙인 로컬 라우터에 연결: 도구 호출 → 결과 → 서명 재전송, `apply_patch`로 파일 생성까지). Codex는 `include: ["reasoning.encrypted_content"]`를 보낸다. 실제 Anthropic이 그 서명을 받는지는 실제 확인으로 남는다.
+- Codex 전용 동작(원격 압축, 내장 도구 호출)은 Claude 모델에서 쓸 수 없다. Codex 0.167.2는 `claude-*` 모델 정보가 없으면 기본 구성으로 내려가 `apply_patch` 도구를 보내지 않고 `instructions` 없이 developer 메시지로 지시문을 보낸다(확인). 그래서 `scripts/phase5-verify.mjs codex-setup`이 사용자 PC의 Codex 모델 캐시에서 항목을 복제해 Claude 모델용 카탈로그(`model_catalog_json`)와 프로필 `shareai-claude`를 만든다: 자유형식 `apply_patch`, 추론 요약 `auto`, 레벨 low/medium/high/xhigh, 지시문의 `GPT-n` 표기는 `Claude`로. 저장소에는 OpenAI 지시문을 넣지 않는다.
 - 자동 `cache_control`은 캐시 쓰기 비용이 있다(API 키). 구독은 한도 절약이 목적이다.
 - **adaptive thinking과 `output_config.effort`(특히 `max`)를 받는 Claude 모델 범위는 미확인이다(리뷰 차단 지적 B).** 예전 세대 모델은 `enabled` + `budget_tokens`만 받을 수 있다. 실제 확인에서 거부되면 모델별 형식표를 둘지, 그 모델을 교차 경로에서 거부할지 정한다.
 - 계정마다 서명이 통하는지(풀은 요청마다 계정을 바꾼다), Codex가 `response.incomplete`에서 재시도하는지(최대 토큰 반복 과금), 큰 `apply_patch`를 만드는 동안 Codex로 이벤트가 없어 무응답 시간 초과(기본 300초)에 걸리는지 미확인이다.
@@ -70,4 +70,4 @@
 ## 완료 조건
 
 1. 자동 테스트: 요청 변환(역할·항목·도구·네임스페이스·자유형식·추론 왕복·캐시 표시·레벨·거부), 응답 변환(추론·텍스트·함수·자유형식·종료·사용량·비스트림), 오류 변환, 파이프라인 HTTP(API 키·구독 헤더, 정산·제한·취소). 기존 테스트에서 새로 실패하는 파일 0.
-2. 실제 확인(사용자 실행): Codex에서 Claude 모델로 파일을 읽고 `apply_patch`로 고치는 도구 대화 여러 턴 1회 — Claude 구독 계정. 쓰려는 Claude 모델마다 adaptive·effort 요청이 받아들여지는지. thinking을 켠 도구 루프에서 중간 assistant가 thinking 없이 `tool_use`로 시작한 뒤 다음 요청이 받아들여지는지(이어 가기 판정이 턴 시작 assistant를 보는 것은 가정이다). Codex 설정에 `model_supports_reasoning_summaries = true`(없으면 Codex가 모르는 모델에 추론 레벨을 보내지 않을 수 있어 접미사로만 정해짐)와 `model_context_window`를 안내한다.
+2. 실제 확인(사용자 실행): Codex에서 Claude 모델로 파일을 읽고 `apply_patch`로 고치는 도구 대화 여러 턴 1회 — Claude 구독 계정. 쓰려는 Claude 모델마다 adaptive·effort 요청이 받아들여지는지. thinking을 켠 도구 루프에서 중간 assistant가 thinking 없이 `tool_use`로 시작한 뒤 다음 요청이 받아들여지는지(이어 가기 판정이 턴 시작 assistant를 보는 것은 가정이다). Codex는 `codex-setup`으로 만든 프로필로 연결한다(리뷰가 권한 `model_supports_reasoning_summaries` 설정은 Codex 0.167.2에 없다).

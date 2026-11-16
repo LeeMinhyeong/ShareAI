@@ -437,3 +437,41 @@ test('an empty first text delta does not shift block indexes: a tool call alone 
   assert.equal(ev[0].content_block.type, 'tool_use');
 });
 
+test('Claude Code mid-conversation system messages become developer messages in place (Claude Code 2.1.3xx)', async () => {
+  codexOauth('x-system');
+  upstream(() => sse(respFrames(textItem('m1', 'ok'))));
+  const r = await send({model:'gpt-6.1-terra(high)', max_tokens:32000, stream:true, thinking:{type:'adaptive', display:'omitted'}, output_config:{effort:'high'},
+    system:[{type:'text', text:'x-anthropic-billing-header: cc_version=2.1.323;'}, {type:'text', text:"You are a Claude agent, built on Anthropic's Claude Agent SDK."}],
+    messages:[
+      {role:'user', content:[{type:'text', text:'<system-reminder>attribution</system-reminder>'}]},
+      {role:'system', content:[{type:'text', text:'# Environment\nPrimary working directory: C:\\w', cache_control:{type:'ephemeral'}}]},
+      {role:'user', content:'Run a shell command'},
+      {role:'system', content:''},
+    ]});
+  assert.equal(r.status, 200, r.text);
+  const input = calls[0].body.input;
+  assert.deepEqual(input.map(i => i.role), ['user', 'developer', 'user']);
+  assert.deepEqual(input[1].content, [{type:'input_text', text:'# Environment\nPrimary working directory: C:\\w'}]);
+  assert.equal(calls[0].body.reasoning.effort, 'high');
+  assert.equal(calls[0].body.instructions, "You are a Claude agent, built on Anthropic's Claude Agent SDK.");
+  upstream(() => { throw new Error('must not dispatch'); });
+  const bad = await send({model:'gpt-5', max_tokens:10, messages:[{role:'user', content:'hi'}, {role:'system', content:[{type:'image', source:{type:'base64', media_type:'image/png', data:'AA'}}]}]});
+  assert.equal(bad.status, 400);
+});
+
+test('tool search references become text and a context overflow reads "prompt is too long" for Claude Code', async () => {
+  openaiKey('x-toolref');
+  upstream(() => sse(respFrames(textItem('m1', 'ok'))));
+  const r = await send({model:'gpt-5', max_tokens:100, tools:[{name:'ToolSearch', input_schema:{type:'object', properties:{}}}, {name:'mcp__fs__read', defer_loading:true, input_schema:{type:'object', properties:{}}}],
+    messages:[{role:'user', content:'go'}, {role:'assistant', content:[{type:'tool_use', id:'t1', name:'ToolSearch', input:{query:'fs'}}]},
+      {role:'user', content:[{type:'tool_result', tool_use_id:'t1', content:[{type:'tool_reference', tool_name:'mcp__fs__read'}]}]}]});
+  assert.equal(r.status, 200, r.text);
+  assert.equal(calls[0].body.input.find(i => i.type === 'function_call_output').output, 'Tool loaded: mcp__fs__read');
+  assert.deepEqual(calls[0].body.tools.map(t => t.name), ['ToolSearch', 'mcp__fs__read']);
+  openaiKey('x-overflow');
+  upstream(() => new Response(JSON.stringify({error:{message:'Your input exceeds the context window of this model.', type:'invalid_request_error', code:'context_length_exceeded'}}), {status:400, headers:{'content-type':'application/json'}}));
+  const o = await send({model:'gpt-5', max_tokens:100, messages:[{role:'user', content:'hi'}]});
+  assert.equal(o.status, 400);
+  assert.equal(JSON.parse(o.text).error.message, 'prompt is too long: Your input exceeds the context window of this model.');
+});
+

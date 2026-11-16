@@ -1,5 +1,7 @@
 # Phase 5 실제 클라이언트·실제 계정 확인 체크리스트 (ADR 0019 완료 조건 6)
 
+> 교차 변환(ADR 0022·0023)과 동시 한도(ADR 0021)의 확인은 [cross-verification-manual.md](cross-verification-manual.md)를 따른다. 이 문서는 2026-11-13 기본 4조합 확인의 기록이다.
+
 이 확인은 **사용자가 직접** 로그인하고 실행한다. 공급자 자격증명과 ShareAI 사용자 키는 채팅에 붙여넣지 말고, 결과(통과/실패, 오류 문구, `status` 출력)만 공유한다.
 
 - 대상 조합 4개: Claude Code × (Claude 구독, Claude API 키), Codex CLI × (Codex 구독, OpenAI API 키)

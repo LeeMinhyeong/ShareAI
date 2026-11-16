@@ -133,7 +133,15 @@ export function prepareCross(body: any): CrossRequest {
   const input: unknown[] = [];
   if (!Array.isArray(body.messages) || !body.messages.length) bad('messages must be a non-empty array');
   for (const m of body.messages) {
-    if (!isObject(m) || (m.role !== 'user' && m.role !== 'assistant')) bad('messages must have role user or assistant');
+    // Claude Code (2.1.3xx) sends mid-conversation `system` messages (environment, reminders). They keep
+    // their position as Responses developer messages; only text can be carried.
+    if (isObject(m) && m.role === 'system') {
+      const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : bad('message content must be a string or an array');
+      const texts = blocks.map((b: any) => isObject(b) && b.type === 'text' && typeof b.text === 'string' ? b.text : bad('system messages may contain only text for OpenAI models')).filter((s: string) => s);
+      if (texts.length) input.push({ type: 'message', role: 'developer', content: texts.map((text: string) => ({ type: 'input_text', text })) });
+      continue;
+    }
+    if (!isObject(m) || (m.role !== 'user' && m.role !== 'assistant')) bad('messages must have role user, assistant or system');
     const role = m.role as 'user' | 'assistant';
     const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : bad('message content must be a string or an array');
     let parts: unknown[] = [];
@@ -171,6 +179,8 @@ export function prepareCross(body: any): CrossRequest {
           for (const c of content) {
             if (isObject(c) && c.type === 'text' && typeof c.text === 'string') texts.push(c.text);
             else if (isObject(c) && c.type === 'image') images.push({ type: 'input_image', image_url: imageUrl(c) });
+            // Claude Code tool search returns references to deferred tools; every tool is already declared here.
+            else if (isObject(c) && c.type === 'tool_reference' && typeof (c.tool_name ?? c.name) === 'string') texts.push(`Tool loaded: ${c.tool_name ?? c.name}`);
             else bad('tool_result may contain only text and images for OpenAI models');
           }
           const text = texts.join('\n');
@@ -373,7 +383,10 @@ const anthropicType = (status: number) => status === 400 ? 'invalid_request_erro
 
 function providerMessage(value: any): string | undefined {
   const m = value?.error?.message ?? value?.response?.error?.message ?? value?.message ?? value?.detail;
-  return typeof m === 'string' && m ? m.slice(0, 4096) : undefined;
+  if (typeof m !== 'string' || !m) return undefined;
+  // Claude Code starts compacting on "prompt is too long"; OpenAI reports the same condition by code.
+  const code = value?.error?.code ?? value?.response?.error?.code;
+  return (code === 'context_length_exceeded' && !/prompt is too long/i.test(m) ? `prompt is too long: ${m}` : m).slice(0, 4096);
 }
 
 /** OpenAI HTTP error body → Anthropic error envelope; the provider's message is kept (ADR 0019 3B). */

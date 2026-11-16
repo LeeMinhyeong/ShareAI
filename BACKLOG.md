@@ -295,9 +295,13 @@ phase4-siwc-vertical: 8초 barrier 안에 워커 2개를 띄우는 테스트. �
 ## ADR 0023 남은 일 (2026-11-15)
 
 - 실제 확인(사용자): Codex에서 Claude 구독 계정으로 파일 읽기와 `apply_patch` 수정이 여러 턴 이어지는지. Codex가 추론 항목의 `encrypted_content`를 돌려보내는지, 구독이 adaptive·effort 형식과 비-Claude Code 도구 구성을 받는지, 도구 이름 접두사가 필요한지(결정 5).
-- Codex가 모르는 모델 이름(claude-*)에 보내는 도구 구성과 지시문을 실제로 기록해 회귀 테스트로 추가.
+- ~~Codex가 모르는 모델 이름(claude-*)에 보내는 도구 구성과 지시문을 실제로 기록해 회귀 테스트로 추가.~~ 2026-11-16 Codex 0.167.2로 기록해 회귀 테스트에 반영(`codex-setup` 추가).
 - `local_shell`·`web_search` 등 호스팅 도구 정의는 버린다. Codex가 이 도구에만 기대면 Claude 모델은 그 기능을 못 쓴다.
 - Anthropic이 JSON(비스트림)으로 답하면 502로 끝낸다(스트림을 요청하므로 드묾).
 - 자유형식 도구 입력은 블록이 끝날 때 한 번에 보낸다. 큰 `apply_patch` 생성 중 Codex 무응답 시간 초과 위험이 있으면 부분 JSON을 점진적으로 풀어 델타로 보낸다.
 - 서명 거부 400이면 thinking을 떼고 한 번 재시도하는 회복 경로는 없다(지금은 모델이 다른 봉투를 버리고, thinking 없는 이어 가기 턴만 thinking을 끈다).
 - `tests/phase4-siwc-vertical.test.mjs`는 가끔 `barrier timeout`으로 실패한다(2026-11-15 확인: ADR 0023 이전 커밋에서도 9회 중 1회).
+- Codex 모델 목록상 GPT 모델이 `max`(와 `ultra`) 레벨을 지원한다. ADR 0022 결정 3은 `max`를 `xhigh`로 낮춰 보낸다. 바꿀지는 사용자 결정 대기. ADR 0023 쪽은 `codex-setup` 카탈로그가 low~xhigh만 제공하므로 `ultra`는 Codex 메뉴에 나오지 않는다(직접 보내면 400).
+- ADR 0022: 대화 중 도구 목록이 바뀐 뒤(mid-conversation tool changes) 목록에 없는 도구의 `function_call`이 기록에 남는 것을 OpenAI가 받는지 미확인. 이전 Anthropic 턴의 서버 도구 블록이 기록에 남으면 지금은 400이다(결정 5).
+- ADR 0022: Codex 구독 백엔드가 Claude Code 시스템 프롬프트를 `instructions`로 받는지는 월요일 `probe gpt`(Codex 구독만 활성)로 확인. 거부되면 developer 메시지로 옮긴다.
+- 확인 도구: `codex-setup`은 Codex 내부 캐시(`models_cache.json`)를 복제하므로 Codex 버전이 바뀌면 다시 만들어야 한다. 캐시가 없는 환경(API 키 로그인만 쓴 경우)용 기본 템플릿은 없다.
